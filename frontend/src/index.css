@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  font-family: 'Red Hat Display', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: #FAF6F0;
+  color: #1A1410;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scanLine {
+  0%,
+  100% {
+    top: 12px;
+  }
+  50% {
+    top: calc(100% - 14px);
+  }
+}
+
+@keyframes rotate-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse-ring {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.04);
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.anim-spin {
+  animation: spin 1.4s linear infinite;
+}
+
+.anim-fadeup {
+  animation: fadeUp 0.55s ease-out both;
+}
+
+.anim-scan {
+  animation: scanLine 2.5s ease-in-out infinite;
+}
+
+.anim-rotate-slow {
+  animation: rotate-slow 30s linear infinite;
+}
+
+.anim-pulse-ring {
+  animation: pulse-ring 1.8s ease-in-out infinite;
+}
+
+.anim-pulse-dot {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+.lead-input::placeholder {
+  color: rgba(250, 246, 240, 0.35);
+}
+
+.lead-input:focus {
+  border-color: rgba(255, 107, 53, 0.6) !important;
+  background: rgba(250, 246, 240, 0.07) !important;
+}

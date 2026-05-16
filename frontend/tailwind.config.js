@@ -1,0 +1,31 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: ['./index.html', './src/**/*.{js,jsx}'],
+  theme: {
+    extend: {
+      colors: {
+        orange: '#FF6B35',
+        orangeDeep: '#C13D11',
+        orangeSoft: '#FFE5D9',
+        wine: '#5C1D2E',
+        wineDeep: '#2E0D17',
+        wineSoft: '#8B3A50',
+        lavender: '#B8A8D9',
+        gold: '#E8B33C',
+        info: '#3B7BB0',
+        cream: '#FAF6F0',
+        paper: '#FFFFFF',
+        sunken: '#F0EAE0',
+        hairline: '#E5DDD0',
+        ink: '#1A1410',
+        inkSoft: '#6B5D52',
+        inkMute: '#9C8E80',
+        wa: '#25D366',
+      },
+      fontFamily: {
+        sans: ["'Red Hat Display'", 'system-ui', 'sans-serif'],
+      },
+    },
+  },
+  plugins: [],
+};
