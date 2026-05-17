@@ -443,6 +443,24 @@ async def whatsapp_uazapi_stats(
     chat_count = _extract_total(stats.get("total_chats"))
     message_count = _extract_total(stats.get("total_messages"))
 
+    # Diagnóstico: loga shape do totalChatsStats (sem PII) pra confirmar
+    # quais chaves a uazapi paga manda neste tier. Se ``chat_count`` ou
+    # ``message_count`` vier 0 com chats reais, é aqui que confirmamos
+    # a estrutura e ajustamos a extração.
+    logger.info(
+        "route.whatsapp_uazapi_stats.payload",
+        extra={
+            "op": "whatsapp_uazapi_stats",
+            "user_id": str(user_id),
+            "top_keys": sorted(payload.keys()) if isinstance(payload, dict) else None,
+            "stats_keys": sorted(stats.keys()),
+            "total_chats_raw": stats.get("total_chats"),
+            "total_messages_raw": stats.get("total_messages"),
+            "chat_count": chat_count,
+            "message_count": message_count,
+        },
+    )
+
     return {
         "chat_count": chat_count,
         "message_count": message_count,

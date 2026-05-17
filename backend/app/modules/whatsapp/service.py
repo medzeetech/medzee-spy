@@ -634,10 +634,16 @@ class WhatsAppService:
     async def cancel_session(self, session_id: UUID) -> None:
         """Manual cancellation (design § 7.4).
 
-        Looks up the session; raises :class:`SessionNotFound` if missing.
-        If already in a terminal status, returns silently (idempotent).
-        Otherwise: best-effort ``provider.disconnect``, publish ``expired``,
-        mark the state + DB row as ``expired``.
+        Resolution order:
+          1. In-memory store (authoritative when present).
+          2. **DB fallback**: se o store esvaziou (reinicio do backend), lê
+             a row em ``whatsapp_sessions`` e usa o ``uazapi_token`` lá pra
+             liberar o slot + marcar ``disconnected``. Sem fallback o user
+             ficaria preso em "connected" eterno após qualquer redeploy.
+          3. ``SessionNotFound`` só se NEM memória NEM DB têm a sessão.
+
+        Se já estiver em status terminal (consumed/failed/expired/disconnected),
+        retorna silenciosamente (idempotente).
         """
         started = time.monotonic()
         logger.info(
@@ -647,7 +653,47 @@ class WhatsAppService:
 
         state = await self._store.get(session_id)
         if state is None:
-            raise SessionNotFound(str(session_id))
+            # Fallback DB: store vazio pós-redeploy. Tenta pegar token do banco.
+            row = await repository.get(session_id)
+            if row is None:
+                raise SessionNotFound(str(session_id))
+
+            db_status = str(row.get("status") or "").lower()
+            if db_status in {"consumed", "failed", "expired", "disconnected"}:
+                logger.info(
+                    "service.cancel_session.db_already_terminal",
+                    extra={
+                        "op": "cancel_session",
+                        "session_id": str(session_id),
+                        "db_status": db_status,
+                    },
+                )
+                return
+
+            token = row.get("uazapi_token")
+            if token:
+                await self._release_provider_slot(
+                    token, session_id=session_id, op="cancel_session.fallback"
+                )
+            try:
+                await repository.mark_status(session_id, "disconnected")
+            except Exception:  # pragma: no cover — defensive
+                logger.exception(
+                    "service.cancel_session.fallback_repo_failed",
+                    extra={"op": "cancel_session", "session_id": str(session_id)},
+                )
+
+            logger.info(
+                "service.cancel_session.exit",
+                extra={
+                    "op": "cancel_session",
+                    "session_id": str(session_id),
+                    "status": "disconnected",
+                    "path": "db_fallback",
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                },
+            )
+            return
 
         if state.status in _TERMINAL_STATUSES:
             logger.info(

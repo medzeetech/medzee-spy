@@ -22,7 +22,9 @@ import { useEffect, useRef, useState } from 'react';
 import { callApi } from './api';
 import { supabase } from './supabase';
 
-const POLL_MS = 2000;
+// 5s é suficiente pra UX (status transita raro: pending→generating→completed)
+// e evita martelar o backend enquanto o worker corre (~30-120s típico).
+const POLL_MS = 5000;
 // Backend pode levar até ~7 min no free tier do uazapi (history sync atrasado
 // + retry budget 220s + extract real). Damos 8 min de margem antes de desistir.
 const MAX_TOTAL_MS = 8 * 60_000;
