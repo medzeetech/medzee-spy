@@ -559,6 +559,26 @@ class WhatsAppService:
                 },
             )
 
+        # 1b. F3 §REPORT-12: link the user to the report row if it exists.
+        # The report row is created by the extract → report worker as soon as
+        # the payload is cached; on the happy path it's already there by the
+        # time signup arrives. If the worker hasn't created the row yet (race),
+        # this no-ops and the worker will pick up user_id when it later reads
+        # whatsapp_sessions.user_id. Lazy import avoids a circular dep.
+        try:
+            from app.modules.reports import repository as reports_repo
+            await reports_repo.link_user(session_id, user_id)
+        except Exception:
+            logger.warning(
+                "service.consume_extracted.report_link_failed",
+                extra={
+                    "op": "consume_extracted",
+                    "session_id": str(session_id),
+                    "user_id": str(user_id),
+                },
+                exc_info=True,
+            )
+
         # 2. Consume the in-memory payload (also marks state.consumed).
         payload = await self._store.consume(session_id)
 

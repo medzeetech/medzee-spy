@@ -387,6 +387,10 @@ async def _finalize_success(
             },
         ),
     )
+
+    # F3 §REPORT-11: kick off the report generation pipeline.
+    _kick_off_report(session_id, payload)
+
     logger.info(
         "extract pipeline completed",
         extra={
@@ -444,6 +448,11 @@ async def _finalize_partial(
             },
         ),
     )
+
+    # F3 §REPORT-11: still kick off the report generation on partial.
+    # The worker handles ``payload.partial=True`` via update_partial.
+    _kick_off_report(session_id, payload)
+
     logger.warning(
         "extract pipeline hard-timeout: saved partial",
         extra={
@@ -512,6 +521,56 @@ async def _fail(
             "elapsed_ms": int((time.monotonic() - started_at) * 1000),
         },
     )
+
+
+# ─── F3 integration: kick off report generation ───────────────────────
+
+
+def _kick_off_report(session_id: UUID, payload: ExtractedPayload) -> None:
+    """Spawn the report generation worker fire-and-forget.
+
+    Lazy-imports ``app.workers.report`` to avoid an import cycle and to keep
+    this module usable even if F3 hasn't been merged yet (defensive — if the
+    import fails we just log and skip).
+
+    The user_id is resolved best-effort from ``whatsapp_sessions.user_id``
+    (may be null if signup hasn't happened yet; F2's ``consume_extracted``
+    will link the report row when signup arrives).
+    """
+    try:
+        from app.workers.report import generate_report_pipeline
+    except ImportError:
+        logger.warning(
+            "extract pipeline: report worker import failed — skipping",
+            extra={"session_id": str(session_id), "op": "extract"},
+        )
+        return
+
+    asyncio.create_task(
+        _run_report_with_user(session_id, payload, generate_report_pipeline),
+        name=f"report-{session_id}",
+    )
+
+
+async def _run_report_with_user(
+    session_id: UUID,
+    payload: ExtractedPayload,
+    pipeline,
+) -> None:
+    """Resolve user_id from DB row, then call ``generate_report_pipeline``."""
+    user_id: UUID | None = None
+    try:
+        row = await repository.get(session_id)
+        if row and row.get("user_id"):
+            user_id = UUID(str(row["user_id"]))
+    except Exception:
+        logger.warning(
+            "extract pipeline: failed resolving user_id for report — proceeding null",
+            extra={"session_id": str(session_id), "op": "extract"},
+            exc_info=True,
+        )
+
+    await pipeline(session_id, payload, user_id=user_id)
 
 
 __all__ = ["extract_30d_pipeline"]

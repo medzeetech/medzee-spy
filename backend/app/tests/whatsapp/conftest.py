@@ -29,13 +29,23 @@ def _disable_extract_post_connected_delay(monkeypatch: pytest.MonkeyPatch) -> No
     otherwise spend an extra 5s per extract scenario — autouse this patch so
     every whatsapp test sees a zero delay. The constant lives in
     ``app.workers.extract`` (F3 §REPORT-14)."""
-    try:
-        from app import workers
-        monkeypatch.setattr(
-            "app.workers.extract._POST_CONNECTED_DELAY_S", 0.0, raising=False
-        )
-    except ImportError:  # pragma: no cover — defensive if module renamed
-        pass
+    monkeypatch.setattr(
+        "app.workers.extract._POST_CONNECTED_DELAY_S", 0.0, raising=False
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_op_report_kickoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F3 wires extract → report worker via ``_kick_off_report`` which fires
+    ``asyncio.create_task``. In tests the spawned task survives past the
+    event-loop teardown and pollutes output with "Task was destroyed but
+    it is pending!" warnings. Tests that specifically verify the trigger
+    can override this in their own scope."""
+    monkeypatch.setattr(
+        "app.workers.extract._kick_off_report",
+        lambda *args, **kwargs: None,
+        raising=False,
+    )
 
 
 # Stable test URL — tests must monkeypatch settings.UAZAPI_BASE_URL to this
