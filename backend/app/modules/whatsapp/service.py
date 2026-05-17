@@ -184,10 +184,32 @@ class WhatsAppService:
             f"?session_id={session_id}"
         )
 
+        # Webhook setup é NÃO-FATAL: se falhar (após retry interno), o QR
+        # ainda é entregue. O webhook só deixa de receber eventos live, mas o
+        # usuário consegue escanear e conectar. F1 trigger (auto-extract pós
+        # connected) DEPENDE do webhook — em ambientes sem callbacks, o user
+        # pode usar o botão "Gerar relatório" (F4 on-demand) como fallback.
         try:
             await self._provider.register_webhook(
                 provider_session.session_token, callback_url
             )
+            webhook_ok = True
+        except UazapiError as exc:
+            webhook_ok = False
+            logger.warning(
+                "service.create_session.webhook_setup_failed",
+                extra={
+                    "op": "create_session",
+                    "session_id": str(session_id),
+                    "error_class": type(exc).__name__,
+                    "error_code": getattr(exc, "code", "unknown"),
+                },
+            )
+
+        # Persistência (DB + store) é FATAL: se falhar, não temos como
+        # rastrear a sessão. Antes de re-raise, libera o slot na uazapi pra
+        # não acumular instâncias órfãs na cota.
+        try:
             await repository.create(
                 session_id,
                 uazapi_token=provider_session.session_token,
@@ -200,9 +222,15 @@ class WhatsAppService:
                 qr_base64=provider_session.qr_base64,
                 user_id=user_id,
             )
-        except UazapiError as exc:
-            # Mark whatever made it into the DB as failed (best effort).
-            await self._safe_mark_failed(session_id, getattr(exc, "code", "unknown"))
+        except Exception as exc:
+            await self._release_provider_slot(
+                provider_session.session_token,
+                session_id=session_id,
+                op="create_session.persistence_failed",
+            )
+            await self._safe_mark_failed(
+                session_id, getattr(exc, "code", "persistence_failed")
+            )
             logger.warning(
                 "service.create_session.post_provider_failed",
                 extra={
@@ -210,6 +238,7 @@ class WhatsAppService:
                     "session_id": str(session_id),
                     "error_class": type(exc).__name__,
                     "error_code": getattr(exc, "code", "unknown"),
+                    "webhook_ok": webhook_ok,
                     "elapsed_ms": int((time.monotonic() - started) * 1000),
                 },
             )

@@ -142,33 +142,43 @@ class UazapiProvider:
         # connection chegava). Ampliamos pra cobrir todos os nomes conhecidos
         # de evento de mensagem no ecossistema Baileys/uazapi. Mantemos
         # ``excludeMessages: false`` defensivo (alguns tiers default = exclude).
-        await self._request(
-            "POST",
-            "/webhook",
-            op="register_webhook",
-            token=session_token,
-            json_body={
-                "url": callback_url,
-                "events": [
-                    "connection",
-                    "messages",
-                    "messages.upsert",
-                    "messages.update",
-                    "message",
-                    "message.upsert",
-                    "message.received",
-                    "messages.received",
-                    "presence.update",
-                    "chats.upsert",
-                    "chats.update",
-                ],
-                "enabled": True,
-                # Defensivo — alguns tiers default excluem mensagens.
-                "excludeMessages": False,
-                "addUrlEvents": True,
-                "addUrlTypesMessages": True,
-            },
-        )
+        #
+        # Retry com _retry_5xx — uazapi tem instabilidades transientes no
+        # /webhook logo após /instance/create (provavelmente latência de
+        # propagação interna). Sem retry, o serviço aborta toda a criação,
+        # joga fora a instância recém-criada (slot consumido) e o usuário fica
+        # com erro 503 vendo "uazapi_unavailable".
+        body = {
+            "url": callback_url,
+            "events": [
+                "connection",
+                "messages",
+                "messages.upsert",
+                "messages.update",
+                "message",
+                "message.upsert",
+                "message.received",
+                "messages.received",
+                "presence.update",
+                "chats.upsert",
+                "chats.update",
+            ],
+            "enabled": True,
+            "excludeMessages": False,
+            "addUrlEvents": True,
+            "addUrlTypesMessages": True,
+        }
+
+        async def _do() -> Any:
+            return await self._request(
+                "POST",
+                "/webhook",
+                op="register_webhook",
+                token=session_token,
+                json_body=body,
+            )
+
+        await _retry_5xx(_do, op="register_webhook")
         # Diagnóstico: lê de volta o webhook configurado pra confirmar o que
         # a uazapi efetivamente aceitou (alguns campos podem ter sido
         # ignorados silenciosamente).
