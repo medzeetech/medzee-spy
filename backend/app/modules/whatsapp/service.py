@@ -527,6 +527,21 @@ class WhatsAppService:
             )
             return None
 
+        # Capture the entry status BEFORE step 2 transitions it to CONSUMED.
+        # If the session is already in FAILED / EXPIRED / CONSUMED, some other
+        # path (extract failure cleanup, TTL expire loop, cancel_session, or
+        # a previous consume_extracted call) already issued `DELETE /instance`
+        # on the provider. Reissuing it would just be a stale-token 401 in
+        # uazapi and pollute the logs with `service.release_slot.delete_failed`.
+        # EXTRACTED is the happy-path entry (payload cached, slot still ours)
+        # — we DO release in that case.
+        entry_status = state.status
+        already_released = entry_status in {
+            SessionStatus.FAILED,
+            SessionStatus.EXPIRED,
+            SessionStatus.CONSUMED,
+        }
+
         # 1. Link user (will be required for RLS on future reads).
         try:
             await repository.link_user(session_id, user_id)
@@ -555,10 +570,22 @@ class WhatsAppService:
                 },
             )
 
-        # 4. Free the WhatsApp number AND the provider slot (best effort).
-        await self._release_provider_slot(
-            state.uazapi_token, session_id=session_id, op="consume_extracted"
-        )
+        # 4. Free the WhatsApp number AND the provider slot (best effort) —
+        # but only if no upstream path already deleted the uazapi instance.
+        if already_released:
+            logger.info(
+                "service.consume_extracted.release_skipped",
+                extra={
+                    "op": "consume_extracted",
+                    "session_id": str(session_id),
+                    "entry_status": entry_status.value,
+                    "reason": "provider instance already deleted upstream",
+                },
+            )
+        else:
+            await self._release_provider_slot(
+                state.uazapi_token, session_id=session_id, op="consume_extracted"
+            )
 
         logger.info(
             "service.consume_extracted.exit",

@@ -351,3 +351,70 @@ async def test_cancel_session_not_found_raises(
     from uuid import uuid4
     with pytest.raises(SessionNotFound):
         await svc.cancel_session(uuid4())
+
+
+# --------------------------------------------------------------------------- #
+# 10. consume_extracted — happy path releases provider slot                    #
+# --------------------------------------------------------------------------- #
+
+
+async def test_consume_extracted_happy_releases_slot(
+    mock_provider: AsyncMock,
+    mock_repo: MagicMock,
+    fresh_store: SessionStore,
+) -> None:
+    """When the session is in EXTRACTED at entry, consume_extracted should
+    finalize the lifecycle and call ``provider.delete_instance`` exactly
+    once to free the uazapi slot."""
+    from uuid import uuid4
+    svc = _svc(mock_provider, fresh_store)
+
+    resp = await svc.create_session(client_ip="5.5.5.5")
+    sid = resp.session_id
+    await fresh_store.update(sid, status=SessionStatus.EXTRACTED)
+
+    mock_provider.delete_instance.reset_mock()
+
+    await svc.consume_extracted(sid, user_id=uuid4())
+
+    mock_provider.delete_instance.assert_awaited_once_with("tok_svc")
+    mock_repo.link_user.assert_awaited_once()
+    mock_repo.mark_consumed.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------- #
+# 11. consume_extracted — skip release when entry status already terminal      #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "entry_status",
+    [SessionStatus.FAILED, SessionStatus.EXPIRED, SessionStatus.CONSUMED],
+)
+async def test_consume_extracted_skips_release_when_already_terminal(
+    mock_provider: AsyncMock,
+    mock_repo: MagicMock,
+    fresh_store: SessionStore,
+    entry_status: SessionStatus,
+) -> None:
+    """If the session is already in FAILED / EXPIRED / CONSUMED, the uazapi
+    instance was already deleted by an upstream path (extract failure
+    cleanup, TTL expire, cancel, or a previous consume). Reissuing
+    ``DELETE /instance`` only spews a stale-token 401 warning into the
+    logs — service must skip it."""
+    from uuid import uuid4
+    svc = _svc(mock_provider, fresh_store)
+
+    resp = await svc.create_session(client_ip="6.6.6.6")
+    sid = resp.session_id
+    await fresh_store.update(sid, status=entry_status)
+
+    mock_provider.delete_instance.reset_mock()
+    mock_provider.disconnect.reset_mock()
+
+    await svc.consume_extracted(sid, user_id=uuid4())
+
+    mock_provider.delete_instance.assert_not_called()
+    mock_provider.disconnect.assert_not_called()
+    # The DB write + user link should still happen — only the provider call is skipped.
+    mock_repo.link_user.assert_awaited_once()

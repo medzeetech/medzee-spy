@@ -36,6 +36,10 @@ export default function QRScreen({ onSimulate, onSessionCreated }) {
   const [phase, setPhase] = useState('loading'); // loading | qr-ready | connected | failed
   const [error, setError] = useState(null);
   const eventSourceRef = useRef(null);
+  // StrictMode (dev) monta o componente 2x de propósito; sem guard, POST /sessions
+  // dispara duas vezes e queima 2 slots da uazapi free tier. Esse ref garante
+  // que o kickoff inicial só roda uma vez por instância real do componente.
+  const didKickoffRef = useRef(false);
 
   const cleanupSSE = useCallback(() => {
     if (eventSourceRef.current) {
@@ -135,6 +139,8 @@ export default function QRScreen({ onSimulate, onSessionCreated }) {
   }, [attachSSE, cleanupSSE, onSessionCreated]);
 
   useEffect(() => {
+    if (didKickoffRef.current) return cleanupSSE;
+    didKickoffRef.current = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional kick-off
     createSession();
     return cleanupSSE;
