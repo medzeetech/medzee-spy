@@ -215,7 +215,7 @@ class WhatsAppService:
     # ------------------------------------------------------------------ #
 
     async def handle_webhook_event(
-        self, session_id: UUID, payload: UazapiWebhookPayload
+        self, session_id: UUID, payload: dict[str, Any]
     ) -> None:
         """Process a uazapi webhook callback (design § 7.3).
 
@@ -235,44 +235,76 @@ class WhatsAppService:
         via REST in the extract pipeline.
         """
         started = time.monotonic()
+
+        # Defensive parsing: uazapi's webhook payload shape varies (different
+        # event types, tier configurations, sometimes flat fields, sometimes
+        # nested under "data"). Sniff the most-likely keys.
+        event = (
+            payload.get("event")
+            or payload.get("EventType")
+            or payload.get("type")
+            or ""
+        )
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+
         logger.info(
-            "service.webhook.enter",
-            extra={
-                "op": "handle_webhook_event",
-                "session_id": str(session_id),
-                "event": payload.event,
-            },
+            "service.webhook.enter session_id=%s event=%s keys=%s data_keys=%s",
+            session_id,
+            event,
+            list(payload.keys()) if isinstance(payload, dict) else "<not-dict>",
+            list(data.keys()) if isinstance(data, dict) else "<not-dict>",
         )
 
         state = await self._store.get(session_id)
         if state is None:
             logger.info(
-                "service.webhook.unknown_session",
-                extra={
-                    "op": "handle_webhook_event",
-                    "session_id": str(session_id),
-                    "event": payload.event,
-                    "elapsed_ms": int((time.monotonic() - started) * 1000),
-                },
+                "service.webhook.unknown_session session_id=%s elapsed_ms=%d",
+                session_id,
+                int((time.monotonic() - started) * 1000),
             )
             return
 
-        if payload.event != "connection":
-            # Silent ignore — design § 7.3 ("messages events are ignored in M1").
-            logger.debug(
-                "service.webhook.ignored_event",
-                extra={
-                    "op": "handle_webhook_event",
-                    "session_id": str(session_id),
-                    "event": payload.event,
-                },
+        # uazapi uses event names like "connection", "messages.upsert", etc.
+        # We treat any event that carries connection-shaped data as a
+        # connection event — looking at both `event` field AND the data.
+        is_connection_event = (
+            "connection" in event.lower()
+            or "connected" in event.lower()
+            or "loggedIn" in data
+            or "logged_in" in data
+        )
+
+        if not is_connection_event:
+            logger.info(
+                "service.webhook.ignored_event session_id=%s event=%s",
+                session_id, event,
             )
             return
 
-        logged_in = payload.data.get("loggedIn")
+        # loggedIn can come in several flavours.
+        logged_in = (
+            data.get("loggedIn")
+            if data.get("loggedIn") is not None
+            else data.get("logged_in")
+        )
+        if logged_in is None:
+            # Some uazapi events use `connected` / `connection` boolean.
+            logged_in = data.get("connected") or data.get("connection") == "open"
 
         if logged_in is True:
-            phone_masked = mask_phone(str(payload.data.get("jid", "")))
+            # Defensive — uazapi may send jid as `jid`, `phone`, or nested
+            # inside `user`. Mask whatever string we find.
+            jid_candidate = (
+                data.get("jid")
+                or data.get("phone")
+                or data.get("number")
+                or ""
+            )
+            if not jid_candidate and isinstance(data.get("user"), dict):
+                jid_candidate = (
+                    data["user"].get("id") or data["user"].get("phone") or ""
+                )
+            phone_masked = mask_phone(str(jid_candidate))
             await self._store.update(
                 session_id,
                 status=SessionStatus.CONNECTED,

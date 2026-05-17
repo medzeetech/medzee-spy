@@ -184,7 +184,7 @@ async def session_events(session_id: UUID) -> StreamingResponse:
     tags=["whatsapp", "webhook"],
 )
 async def uazapi_webhook(
-    payload: UazapiWebhookPayload,
+    request: Request,
     session_id: UUID = Query(
         ..., description="UUID from the registered callback URL"
     ),
@@ -199,35 +199,38 @@ async def uazapi_webhook(
       stampede.
     * Must return in < 5s. The service already schedules the heavy extract
       work via :py:func:`asyncio.create_task`, so calling
-      :py:meth:`handle_webhook_event` is itself fast (it only updates state
-      and publishes the ``connected`` event before returning).
-    * Unknown ``session_id`` → silently no-op (the service handles it and
-      logs at debug). We do **not** raise 404 — uazapi would retry forever.
+      :py:meth:`handle_webhook_event` is itself fast.
+    * Unknown ``session_id`` → silently no-op.
 
-    Privacy note: we log only the ``event`` discriminator and the
-    ``session_id``; the rest of the payload is left to the service to handle
-    and is never written to logs (WPP-10).
+    We accept the raw JSON body as ``dict`` rather than a Pydantic-validated
+    model because uazapi's wire schema is loosely documented — the field
+    names and shape vary across event types and tier configurations. A
+    strict model would 422 the request, prompting uazapi to retry-storm.
+    The service is responsible for sniffing what it needs out of the payload.
     """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    event_hint = body.get("event") or body.get("EventType") or body.get("type") or "?"
+    body_keys = list(body.keys()) if isinstance(body, dict) else []
+
     logger.info(
-        "route.webhook.enter",
-        extra={
-            "op": "uazapi_webhook",
-            "session_id": str(session_id),
-            "event": payload.event,
-        },
+        "route.webhook.enter session_id=%s event=%s keys=%s",
+        session_id,
+        event_hint,
+        body_keys,
     )
 
     try:
-        await service.handle_webhook_event(session_id, payload)
+        await service.handle_webhook_event(session_id, body)
     except Exception:
         # Swallow + log: webhook must stay 2xx so uazapi doesn't retry-storm.
         logger.exception(
-            "route.webhook.handler_failed",
-            extra={
-                "op": "uazapi_webhook",
-                "session_id": str(session_id),
-                "event": payload.event,
-            },
+            "route.webhook.handler_failed session_id=%s event=%s",
+            session_id,
+            event_hint,
         )
 
     return {"status": "ok"}

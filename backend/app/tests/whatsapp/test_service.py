@@ -228,11 +228,11 @@ async def test_handle_webhook_event_loggedin_publishes_connected_and_schedules_e
 
     monkeypatch.setattr(svc, "_run_extract", _fake_run_extract)
 
-    payload = UazapiWebhookPayload(
-        event="connection",
-        instance="inst-1",
-        data={"loggedIn": True, "jid": "5511987651234@s.whatsapp.net"},
-    )
+    payload = {
+        "event": "connection",
+        "instance": "inst-1",
+        "data": {"loggedIn": True, "jid": "5511987651234@s.whatsapp.net"},
+    }
     await svc.handle_webhook_event(sid, payload)
 
     # Let the scheduled task get picked up by the loop.
@@ -266,11 +266,11 @@ async def test_handle_webhook_event_unknown_session_noop(
     from uuid import uuid4
     sid = uuid4()
 
-    payload = UazapiWebhookPayload(
-        event="connection",
-        instance="inst-x",
-        data={"loggedIn": True, "jid": "5511999990000@s.whatsapp.net"},
-    )
+    payload = {
+        "event": "connection",
+        "instance": "inst-x",
+        "data": {"loggedIn": True, "jid": "5511999990000@s.whatsapp.net"},
+    }
     await svc.handle_webhook_event(sid, payload)
 
     # No state in the store, no repo writes.
