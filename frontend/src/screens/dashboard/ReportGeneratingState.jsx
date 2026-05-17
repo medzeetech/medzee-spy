@@ -1,6 +1,9 @@
-import { Sparkles, RefreshCw } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 
+// Hard cap pra fake progress. NÃO chega a 100% até o backend confirmar
+// `completed` (REPORT-19a). Curva ease-out até 80% nos primeiros 60s,
+// marca-passo até 95% até 90s, depois trava em 95%.
 function fakeProgress(elapsedMs) {
   const t = Math.min(elapsedMs / 60_000, 1);
   const phase1 = 80 * (1 - Math.pow(1 - t, 3));
@@ -19,35 +22,24 @@ function messageFor(elapsedMs) {
   if (elapsedMs < 90_000) {
     return 'Quase lá — finalizando o diagnóstico…';
   }
-  return 'Está demorando mais que o normal. Pode continuar aguardando ou tentar atualizar em alguns minutos.';
+  // Após 90s, mensagem tranquilizadora sem CTA — recarregar reinicia o
+  // pipeline e perde progresso. Polling no pano de fundo continua.
+  return 'Finalizando os últimos detalhes. Aguarde mais um instante.';
 }
 
-export default function ReportGeneratingState({ elapsedMs = 0, onRetry }) {
+export default function ReportGeneratingState({ elapsedMs = 0 }) {
   const pct = fakeProgress(elapsedMs);
   const message = messageFor(elapsedMs);
-  const showRetry = elapsedMs >= 90_000;
-
-  const handleRetry = () => {
-    if (typeof onRetry === 'function') {
-      onRetry();
-    } else if (typeof window !== 'undefined') {
-      window.location.reload();
-    }
-  };
 
   return (
     <div
       style={{
-        minHeight: '100vh',
         width: '100%',
-        background:
-          'radial-gradient(ellipse 120% 80% at 50% -10%, #2a1530 0%, #1A1410 65%)',
-        color: COLORS.cream,
+        minHeight: 'calc(100vh - 80px)',
         display: 'flex',
-        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '32px 20px',
+        padding: '24px 16px',
         fontFamily: "'Red Hat Display', sans-serif",
       }}
     >
@@ -56,14 +48,12 @@ export default function ReportGeneratingState({ elapsedMs = 0, onRetry }) {
         style={{
           position: 'relative',
           width: '100%',
-          maxWidth: 460,
-          background: 'rgba(250,246,240,0.04)',
-          border: '1px solid rgba(255,107,53,0.18)',
-          borderRadius: 24,
+          maxWidth: 480,
+          background: COLORS.paper,
+          border: `1px solid ${COLORS.hairline}`,
+          borderRadius: 20,
           padding: 'clamp(24px, 4vw, 36px)',
-          backdropFilter: 'blur(20px)',
-          WebkitBackdropFilter: 'blur(20px)',
-          boxShadow: '0 40px 80px -20px rgba(0,0,0,0.7)',
+          boxShadow: '0 12px 32px -16px rgba(0,0,0,0.08)',
           textAlign: 'center',
         }}
       >
@@ -73,8 +63,8 @@ export default function ReportGeneratingState({ elapsedMs = 0, onRetry }) {
             gap: 8,
             padding: '6px 12px',
             borderRadius: 99,
-            background: 'rgba(255,107,53,0.12)',
-            border: '1px solid rgba(255,107,53,0.3)',
+            background: 'rgba(255,107,53,0.1)',
+            border: '1px solid rgba(255,107,53,0.25)',
             color: COLORS.orange,
             fontSize: 11.5,
             fontWeight: 600,
@@ -88,12 +78,13 @@ export default function ReportGeneratingState({ elapsedMs = 0, onRetry }) {
 
         <h1
           style={{
-            fontSize: 'clamp(24px, 4vw, 30px)',
+            fontSize: 'clamp(22px, 3.6vw, 28px)',
             fontWeight: 800,
             letterSpacing: '-0.02em',
+            color: COLORS.ink,
             margin: 0,
             marginBottom: 12,
-            lineHeight: 1.18,
+            lineHeight: 1.2,
           }}
         >
           Análise IA em curso
@@ -104,10 +95,10 @@ export default function ReportGeneratingState({ elapsedMs = 0, onRetry }) {
           style={{
             gap: 10,
             margin: '0 auto 28px',
-            color: 'rgba(250,246,240,0.78)',
+            color: COLORS.inkSoft,
             fontSize: 14.5,
             lineHeight: 1.5,
-            maxWidth: 380,
+            maxWidth: 400,
             minHeight: 44,
           }}
         >
@@ -119,7 +110,7 @@ export default function ReportGeneratingState({ elapsedMs = 0, onRetry }) {
               borderRadius: 99,
               background: COLORS.orange,
               flexShrink: 0,
-              boxShadow: '0 0 12px rgba(255,107,53,0.7)',
+              boxShadow: '0 0 10px rgba(255,107,53,0.5)',
             }}
           />
           <span>{message}</span>
@@ -128,10 +119,10 @@ export default function ReportGeneratingState({ elapsedMs = 0, onRetry }) {
         <div
           style={{
             height: 6,
-            background: 'rgba(250,246,240,0.08)',
+            background: COLORS.sunken,
             borderRadius: 99,
             overflow: 'hidden',
-            marginBottom: 14,
+            marginBottom: 12,
           }}
         >
           <div
@@ -140,7 +131,6 @@ export default function ReportGeneratingState({ elapsedMs = 0, onRetry }) {
               width: `${pct}%`,
               transition: 'width 1s linear',
               background: `linear-gradient(90deg, ${COLORS.orangeDeep}, ${COLORS.orange})`,
-              boxShadow: '0 0 14px rgba(255,107,53,0.6)',
               borderRadius: 99,
             }}
           />
@@ -149,7 +139,7 @@ export default function ReportGeneratingState({ elapsedMs = 0, onRetry }) {
         <div
           style={{
             fontSize: 11.5,
-            color: 'rgba(250,246,240,0.45)',
+            color: COLORS.inkMute,
             letterSpacing: '0.08em',
             textTransform: 'uppercase',
             fontWeight: 600,
@@ -157,38 +147,6 @@ export default function ReportGeneratingState({ elapsedMs = 0, onRetry }) {
         >
           {Math.round(pct)}% concluído
         </div>
-
-        {showRetry && (
-          <button
-            type="button"
-            onClick={handleRetry}
-            className="inline-flex items-center justify-center transition-all"
-            style={{
-              marginTop: 26,
-              gap: 8,
-              padding: '12px 22px',
-              borderRadius: 14,
-              border: '1px solid rgba(255,107,53,0.4)',
-              background: 'rgba(255,107,53,0.12)',
-              color: COLORS.cream,
-              fontSize: 14,
-              fontWeight: 700,
-              cursor: 'pointer',
-              fontFamily: "'Red Hat Display', sans-serif",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255,107,53,0.2)';
-              e.currentTarget.style.transform = 'translateY(-1px)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255,107,53,0.12)';
-              e.currentTarget.style.transform = 'translateY(0)';
-            }}
-          >
-            <RefreshCw size={15} />
-            Atualizar
-          </button>
-        )}
       </div>
     </div>
   );

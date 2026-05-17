@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, RefreshCw, WifiOff } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
@@ -215,13 +216,23 @@ export default function ReportDetailPage() {
   const pollingKey = id === 'latest' ? 'latest' : id;
   const state = useReportPolling(pollingKey);
 
+  // Sessão expirou em background — manda pra /login preservando o redirect.
+  useEffect(() => {
+    if (state.status === 'unauthorized') {
+      const next = encodeURIComponent(
+        typeof window !== 'undefined' ? window.location.pathname : '/app/reports/latest',
+      );
+      navigate(`/login?next=${next}`, { replace: true });
+    }
+  }, [state.status, navigate]);
+
+  if (state.status === 'unauthorized') {
+    // Render mínimo enquanto o useEffect dispara o redirect.
+    return null;
+  }
+
   if (state.status === 'pending' || state.status === 'generating') {
-    return (
-      <ReportGeneratingState
-        elapsedMs={state.elapsedMs}
-        onRetry={() => window.location.reload()}
-      />
-    );
+    return <ReportGeneratingState elapsedMs={state.elapsedMs} />;
   }
 
   if (state.status === 'failed') {
