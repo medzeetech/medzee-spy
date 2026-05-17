@@ -153,9 +153,14 @@ async def test_rate_limit_blocks_4th_attempt(
     mock_provider: AsyncMock,
     mock_repo: MagicMock,
     fresh_store: SessionStore,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Three creates from the same IP succeed; the 4th raises
-    ``RateLimitExceeded`` (WPP-16: > 3 in 5min)."""
+    ``RateLimitExceeded`` (WPP-16). The default cap is overridable via env
+    var; this test pins it to 3 to keep the WPP-16 contract verified."""
+    monkeypatch.setattr(
+        "app.modules.whatsapp.service._RATE_LIMIT_MAX_ATTEMPTS", 3
+    )
     svc = _svc(mock_provider, fresh_store)
     ip = "9.9.9.9"
 

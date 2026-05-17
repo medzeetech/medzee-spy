@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -74,8 +75,16 @@ class SessionNotFound(ServiceError):
 # ---------------------------------------------------------------------------
 
 # WPP-16: per-IP creation attempts are tracked in monotonic-time windows.
-_RATE_LIMIT_WINDOW_S: float = 300.0   # 5 minutes
-_RATE_LIMIT_MAX_ATTEMPTS: int = 3     # > 3 in the window → reject
+# Defaults are conservative for production (3/5min). Overridable via env
+# vars (WPP_RATE_LIMIT_WINDOW_S / WPP_RATE_LIMIT_MAX_ATTEMPTS) so dev/smoke
+# pode ficar mais permissivo sem mudar código — necessário porque a gente
+# itera no smoke E2E criando várias sessions enquanto debug.
+_RATE_LIMIT_WINDOW_S: float = float(
+    os.environ.get("WPP_RATE_LIMIT_WINDOW_S", "300")
+)
+_RATE_LIMIT_MAX_ATTEMPTS: int = int(
+    os.environ.get("WPP_RATE_LIMIT_MAX_ATTEMPTS", "20")
+)
 
 # Re-exported alias kept for backwards compatibility with the route layer.
 from app.modules.whatsapp.schemas import TERMINAL_STATUSES as _TERMINAL_STATUSES  # noqa: E402,F401
