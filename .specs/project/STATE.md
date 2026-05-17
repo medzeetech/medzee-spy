@@ -13,9 +13,10 @@
   Por quê: prompt envolve análise textual extensa em PT-BR; Claude tem janela grande e bom desempenho. Mantém abstração para trocar provider sem reescrever pipeline.
   Como aplicar: `app/clients/llm.py` com interface `async def complete(messages, model, max_tokens) -> str` e adapter Anthropic em primeiro. Vars `LLM_PROVIDER`, `LLM_MODEL`, `ANTHROPIC_API_KEY` já estão no `.env`.
 
-- **D3 (2026-05-17) — Reutilizar instância Supabase do projeto "News" com prefixo `medzee_` nas tabelas.**
-  Por quê: pedido explícito do briefing.
-  Como aplicar: migrations criam `medzee_users_profile`, `medzee_reports`, `medzee_whatsapp_sessions`. Supabase Auth é compartilhado (sem prefixo).
+- **D3 (2026-05-17, revisada) — Reutilizar instância Supabase do projeto "News" (`itghmlcipjloirsyhare`) com schema isolado `medzee`. Reuso apenas de `auth.users` (compartilhado).**
+  Por quê: o projeto News é uma newsletter médica diária; suas tabelas (`public.subscribers`, `articles`, `triagens` etc.) são tightly-coupled ao pipeline editorial — reusar `subscribers` exigiria ALTER (CHECK constraint só aceita `'active'|'unsubscribed'`, faltam phone/ticket/clinic_segment) e teria efeito colateral grave (lead Spy entraria na lista de envio do newsletter). Schema dedicado evita conflito total e simplifica permissions.
+  Como aplicar: schema `medzee.*` (não prefixo); migrations criam `medzee.whatsapp_sessions` (F1, **aplicada**), `medzee.users_profile` (F2), `medzee.reports` (F3). Identidade compartilhada via `auth.users(id)`. Tag soft em `auth.users.raw_app_meta_data.projects = ['spy']` no signup do F2 (vira claim no JWT). Source-of-truth de "user pertence ao Spy" = existência de row em `medzee.users_profile`.
+  Migrations aplicadas: `f1_1_medzee_schema_and_whatsapp_sessions`, `f1_2_harden_set_updated_at_search_path`.
 
 - **D4 (2026-05-17) — Nenhuma mensagem persistida no banco/log/disco.**
   Por quê: privacidade prometida na landing + risco LGPD para dados de saúde.
@@ -42,6 +43,9 @@
 - **B1 (aberto) — Validação LGPD/DPA para tráfego via uazapi.**
   Antes de produção precisamos: (a) confirmar política de retenção da uazapi (quanto tempo eles guardam mensagens em seus servidores antes de descartar); (b) localização do data center (deve ser BR se possível); (c) ter DPA/contrato adequado já que dados sensíveis de saúde passam pela infra deles. Não bloqueia desenvolvimento local; bloqueia deploy público.
 
+- **B2 (aberto) — Supabase Auth: `leaked_password_protection` desabilitada (project-wide).**
+  Advisor detectou que o Supabase Auth do projeto News não tem proteção contra senhas vazadas (HaveIBeenPwned check). Como o Auth é compartilhado, isso afeta o signup do Spy (F2). Habilitar via Dashboard → Authentication → Policies antes do F2 ir pra produção. Combinar com o time News (decisão project-wide). [Doc](https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection).
+
 ## Lições
 
 _(serão preenchidas durante a execução)_
@@ -52,7 +56,9 @@ _(serão preenchidas durante a execução)_
 - [x] ~~Confirmar storage de sessão Baileys~~ → D1 trocou para uazapi, ponto obsoleto.
 - [ ] **Benchmark de extração**: rodar smoke test com instância uazapi real (free ou paga) medindo tempo de extrair 30d para ~50 chats. Alvo da spec: ≤ 90s. Se não bater, paralelizar mais ou aceitar SLA maior.
 - [ ] **Validar política LGPD/DPA da uazapi** (B1).
-- [ ] **Migration Supabase**: criar `medzee_users_profile`, `medzee_reports`, `medzee_whatsapp_sessions` (com coluna `uazapi_token`).
+- [x] ~~**Migration Supabase F1**: criar schema `medzee` + `medzee.whatsapp_sessions`~~ — aplicada (`f1_1_*` + `f1_2_*` em 2026-05-17).
+- [ ] **Migration F2**: `medzee.users_profile (user_id PK→auth.users, name, phone, ticket_medio, clinic_segment, created_at, updated_at)` + RLS owner.
+- [ ] **Migration F3**: `medzee.reports (id, user_id→auth.users, session_id→whatsapp_sessions, status, payload jsonb, prompt_version, model, created_at, ready_at)` + RLS owner.
 - [ ] Mover `AGENT_ID` da Marina (ElevenLabs) de hardcode para `import.meta.env.VITE_ELEVENLABS_AGENT_ID` em `AgentScreen.jsx` (CONCERNS R8) — env já está pronto.
 
 ## Ideias adiadas

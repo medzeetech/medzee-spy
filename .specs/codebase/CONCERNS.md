@@ -24,6 +24,20 @@
 **Impacto:** Risco de divergência entre forma do mock e payload real → bugs visuais.
 **Mitigação:** Em F3, definir o payload do `reports.payload` JSONB **espelhando exatamente** a forma de `reportData.js` (mesmas chaves, mesmos tipos). Documentar no spec da feature.
 
+### R10 — Supabase compartilhado com News tem RLS permissiva
+**Evidência:** `get_advisors` (security) reportou 16 warnings no projeto News (`itghmlcipjloirsyhare`), todos no schema `public`:
+- 12x `rls_policy_always_true` em `public.subscribers`, `articles`, `sources`, `emails`, `email_deliveries`, `triagens`, `triagem_blocos`, `app_settings`
+- 2x `anon_security_definer_function_executable` (`public.request_unsubscribe`, `public.rls_auto_enable`)
+- 2x `authenticated_security_definer_function_executable` (idem)
+- 1x `public_bucket_allows_listing` em `storage.objects/triagem-images`
+**Impacto pra nós:** zero — estamos isolados no schema `medzee` com RLS estrita por owner; não acessamos `public.*`. Mas vale registrar pois o anon key compartilhado entre News e Spy carrega risco caso alguém exporte dados via REST API anon.
+**Mitigação:** decisão de remediar é do time News (são as policies deles). Nossa parte é nunca usar tabelas `public.*` e ter logs estruturados que detectem se o frontend tentar.
+
+### R11 — Supabase Auth: `leaked_password_protection` desabilitada
+**Evidência:** advisor `auth_leaked_password_protection` no projeto compartilhado.
+**Impacto:** senhas vazadas (HaveIBeenPwned) podem ser usadas no signup do Spy (F2).
+**Mitigação:** ver blocker B2 em STATE.md. Habilitar antes do F2 ir pra prod.
+
 ## Risco — baixo
 
 ### R5 — Paleta de cores duplicada
