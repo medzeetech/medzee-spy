@@ -1,9 +1,9 @@
 # F1 — WhatsApp Ingestion
 
-> Conectar o WhatsApp da clínica via QR Code e extrair o histórico dos últimos 30 dias, sem persistir conteúdo.
+> Conectar o WhatsApp da clínica via QR Code (uazapi) e extrair o histórico dos últimos 30 dias, sem persistir conteúdo.
 
 ## Problem statement
-Hoje a tela `/spy` gera um QR mockado que aponta para uma URL fixa e o fluxo nunca se conecta de fato ao WhatsApp do usuário. Sem essa conexão real, todo o resto do produto (cadastro, processamento, relatório autenticado) opera sobre dados fictícios e a entrega da task descrita em `contexto_medzee_spy.mc` fica inviável. Precisamos de uma fonte de mensagens reais (últimos 30 dias) entregue ao backend para que o pipeline de relatório tenha matéria-prima.
+Hoje a tela `/spy` gera um QR mockado que aponta para uma URL fixa e o fluxo nunca se conecta de fato ao WhatsApp do usuário. Sem essa conexão real, todo o resto do produto (cadastro, processamento, relatório autenticado) opera sobre dados fictícios e a entrega da task descrita em `contexto_medzee_spy.mc` fica inviável. Precisamos de uma fonte de mensagens reais (últimos 30 dias) entregue ao backend para que o pipeline de relatório tenha matéria-prima — usando a uazapi como provider (D1).
 
 ## Users
 - **Médico/gestor da clínica** que lê o QR para liberar a análise — interage com `/spy`.
@@ -11,9 +11,9 @@ Hoje a tela `/spy` gera um QR mockado que aponta para uma URL fixa e o fluxo nun
 
 ## Success metrics
 - ≥ 95% das tentativas de leitura de QR resultam em sessão `connected` em ≤ 60s (em rede estável).
-- Extração de 30 dias devolve resultado em ≤ 90s para clínicas com ≤ 10.000 mensagens no período.
+- Extração de 30 dias devolve resultado em ≤ 90s para clínicas com ≤ 10.000 mensagens no período (alvo a confirmar com smoke test — ver STATE.md "Todos").
 - 0 ocorrência de conteúdo de mensagem persistido em disco (auditoria por grep no DB e nos logs).
-- 100% das sessões `extracted` são encerradas em ≤ 5min após o extract (cleanup garantido).
+- 100% das sessões `extracted` são encerradas via `POST /instance/disconnect` em ≤ 5min após o extract (cleanup garantido).
 
 ## User stories
 
@@ -21,92 +21,111 @@ Hoje a tela `/spy` gera um QR mockado que aponta para uma URL fixa e o fluxo nun
 
 **US-01 — Solicitar nova sessão de WhatsApp**
 Como frontend `/spy`, quero pedir uma nova sessão ao backend e receber um QR Code para exibir, para que o médico consiga escanear.
-- WPP-01: WHEN o frontend chama `POST /api/whatsapp/sessions` sem corpo, THEN o backend SHALL retornar `{ sessionId: uuid, qr: string (base64 png ou string-protocolo), status: "pending" }` em ≤ 5s.
-- WPP-02: WHEN o sidecar Node não responde em 5s, THEN o backend SHALL retornar `503` com `detail: "sidecar_unavailable"`.
-- WPP-03: WHEN o backend cria a sessão, THEN ele SHALL persistir um registro em `medzee_whatsapp_sessions` com `status="pending"`, `sidecar_session=<id do sidecar>`, `user_id=NULL`.
+- WPP-01: WHEN o frontend chama `POST /api/whatsapp/sessions` sem corpo, THEN o backend SHALL: (a) chamar `POST <uazapi>/instance/create` com header `admintoken`, (b) chamar `POST <uazapi>/instance/connect` com o `instance_token` retornado, (c) persistir um registro em `medzee_whatsapp_sessions` com `status="pending"`, `uazapi_token=<instance_token>`, `user_id=NULL`, e (d) responder `{ sessionId: uuid, qr: base64_png, status: "pending" }` em ≤ 8s.
+- WPP-02: WHEN a uazapi não responde em 8s (em qualquer etapa do WPP-01), THEN o backend SHALL retornar `503` com `detail: "uazapi_unavailable"` e marcar a sessão como `failed` se já criada.
+- WPP-03: WHEN o backend cria a sessão, THEN ele SHALL registrar webhook em `POST <uazapi>/webhook` com `{ url: <API_BASE_URL>/api/whatsapp/webhook?session_id=<uuid>, events: ["connection","messages"], enabled: true }`. O `session_id` na querystring é a chave para rotear eventos no callback.
 
 **US-02 — Atualização do QR e status em tempo real**
-Como frontend, quero receber atualizações do estado da sessão (novo QR, conectado, extraindo, extraído, falhou) sem polling manual, para refletir progresso na UI.
-- WPP-04: WHEN o frontend abre `GET /api/whatsapp/sessions/:id/events` (Server-Sent Events ou WS), THEN o backend SHALL repassar em tempo real os eventos vindos do sidecar: `qr-updated`, `connected`, `extracting`, `extracted`, `failed`, `expired`.
-- WPP-05: WHEN o QR do sidecar expira (Baileys reemite a cada ~20s até a leitura), THEN o evento `qr-updated` SHALL carregar o novo QR em `data.qr`.
-- WPP-06: WHEN a sessão atinge `connected`, THEN o evento SHALL incluir `{ status: "connected", phone: "<msisdn mascarado, ex.: +55 11 9****-1234>" }`. Número completo NÃO é exposto na resposta.
+Como frontend, quero receber atualizações do estado da sessão sem polling manual, para refletir progresso na UI.
+- WPP-04: WHEN o frontend abre `GET /api/whatsapp/sessions/:id/events` (SSE — `text/event-stream`), THEN o backend SHALL transmitir eventos: `qr-updated`, `connected`, `extracting`, `extracted`, `failed`, `expired`. Formato: `event: <name>\ndata: <json>\n\n`.
+- WPP-05: WHEN o QR expira (uazapi rejeita o `instance_token` atual OU passa janela de leitura) AND a sessão ainda está `pending`, THEN o backend SHALL chamar `POST <uazapi>/instance/connect` novamente para renovar o QR e emitir SSE `qr-updated` com `data.qr` (novo base64).
+- WPP-06: WHEN o webhook da uazapi entrega `event="connection"` com `data.loggedIn=true` (ou `data.connected=true && data.loggedIn=true`), THEN o backend SHALL: (a) atualizar `medzee_whatsapp_sessions.status="connected"`, (b) emitir SSE `connected` com `{ phone: <msisdn mascarado, ex.: "+55 11 9****-1234"> }`. Número completo NÃO é exposto na resposta e nunca é logado.
 
 **US-03 — Extração das mensagens dos últimos 30 dias**
-Como backend, quero pedir ao sidecar a extração de todas as conversas dos últimos 30 dias após `connected`, para alimentar o pipeline LLM em F3.
-- WPP-07: WHEN a sessão atinge `connected`, THEN o backend SHALL chamar automaticamente `POST <sidecar>/sessions/:id/extract?days=30`.
-- WPP-08: WHEN a extração termina, THEN o sidecar SHALL retornar `{ messageCount, conversationCount, conversations: [{ jid, contactName, messages: [{ ts, fromMe, type, text }] }] }` — apenas campos necessários para análise, sem mídia, sem location, sem áudios.
-- WPP-09: WHEN o resultado chega ao backend, THEN ele SHALL armazenar o payload em cache em-memória com TTL = 15min, vinculado ao `sessionId`, e atualizar `medzee_whatsapp_sessions.status="extracted"`, `message_count`, `extracted_at`.
-- WPP-10: O conteúdo bruto das mensagens NUNCA SHALL ser gravado em disco, log estruturado, ou banco. Auditável: logs só registram contagens e tempos.
+Como backend, quero iniciar automaticamente a extração após `connected`, para alimentar o pipeline LLM em F3.
+- WPP-07: WHEN a sessão transita para `connected`, THEN o backend SHALL disparar uma task assíncrona que executa: (1) `POST <uazapi>/chat/find` paginado (limit=100, offset=0…) coletando todos os chats sem filtro de grupo (ambos individuais e grupos contam); (2) para cada chat (paralelizando até 5 concurrent), `POST <uazapi>/message/find` com `{ chatid, limit: 100, offset: 0 }` em loop, parando quando `timestamp < now() - 30 dias` OR `hasMore=false`.
+- WPP-08: O backend SHALL agregar o resultado em memória no formato:
+  ```
+  {
+    messageCount: int,
+    conversationCount: int,
+    conversations: [
+      { wa_chatid, contactName, lastMessageAt, isGroup, messages: [{ ts, fromMe, type, text }] }
+    ]
+  }
+  ```
+  Apenas campos textuais. **Sem mídia, sem áudio, sem documentos, sem location, sem status.**
+- WPP-09: WHEN a extração termina (todos os chats relevantes esgotados OR limite de 90s atingido), THEN o backend SHALL: (a) armazenar o payload em cache em-memória com TTL=15min vinculado ao `sessionId`, (b) atualizar `medzee_whatsapp_sessions.status="extracted"`, `message_count`, `extracted_at=now()`, (c) emitir SSE `extracted` com `{ messageCount, conversationCount }`.
+- WPP-10: O conteúdo bruto das mensagens NUNCA SHALL ser gravado em disco, log estruturado, ou banco. Auditável: logs registram apenas `chat_count`, `message_count`, `elapsed_ms`, `status`.
 
 **US-04 — Encerramento e cleanup**
-Como sistema, quero garantir que toda sessão Baileys aberta seja encerrada após extração ou em caso de falha, para minimizar risco de banimento (R1) e exposição.
-- WPP-11: WHEN `status = "extracted"` AND o payload é consumido por F2 (ou TTL expira), THEN o backend SHALL chamar `DELETE <sidecar>/sessions/:id` e marcar `status="consumed"`.
-- WPP-12: WHEN ocorrer erro irrecuperável (sidecar 5xx, timeout, banimento detectado), THEN a sessão SHALL ir para `status="failed"`, sidecar é forçado a encerrar (`DELETE`), e o frontend recebe evento `failed` com `code` semântico (`timeout`, `banned`, `qr_expired`, `extract_failed`, `unknown`).
-- WPP-13: O diretório de auth state do Baileys (`whatsapp-sidecar/sessions/<id>/`) SHALL ser removido pelo sidecar imediatamente após `DELETE`.
+Como sistema, quero garantir que toda sessão uazapi aberta seja encerrada após o uso, para liberar o número do WhatsApp do cliente e reduzir custo/risco.
+- WPP-11: WHEN `status="extracted"` AND o payload é consumido por F2 (signup linka `user_id`) OR o TTL de 15min expira, THEN o backend SHALL chamar `POST <uazapi>/instance/disconnect` (com `token=uazapi_token`) e marcar `medzee_whatsapp_sessions.status="consumed"`.
+- WPP-12: WHEN ocorrer erro irrecuperável (uazapi 5xx persistente, timeout, banimento detectado via `provider_code: 463` no payload de erro, ou webhook não chega em 90s pós-`pending`), THEN a sessão SHALL ir para `status="failed"`, o backend tenta `POST /instance/disconnect` best-effort, e o frontend recebe evento SSE `failed` com `{ code: "timeout" | "banned" | "qr_expired" | "extract_failed" | "uazapi_unavailable" | "unknown", message: string }`.
+- WPP-13: ~~Diretório de auth state do Baileys~~ — **N/A**: uazapi gerencia o auth state internamente. Substituído por: WHEN a sessão termina (`consumed` ou `failed`), o backend MAY chamar `DELETE <uazapi>/instance/:id` (endpoint admin) para apagar a instância no final do dia via cron, mas em M1 basta `disconnect` (o número fica liberado e a instância órfã pode ser limpa depois).
 
 ### P2 — Should have
 
-**US-05 — Resiliência a desconexão**
-- WPP-14: WHEN o WS frontend ↔ backend cai durante `pending`/`connected`/`extracting`, THEN o frontend SHALL poder reabrir `GET /api/whatsapp/sessions/:id/events` e receber o último estado conhecido como primeiro evento (`replay-last`).
-- WPP-15: WHEN o frontend reabre uma sessão já em `extracted` ou posterior, THEN o backend SHALL responder com o último estado e fechar o stream.
+**US-05 — Resiliência a desconexão do SSE**
+- WPP-14: WHEN a conexão SSE frontend ↔ backend cai durante `pending`/`connected`/`extracting`, THEN o frontend SHALL poder reabrir `GET /api/whatsapp/sessions/:id/events` e receber o último estado conhecido como primeiro evento (`replay-last`) — backend mantém o estado da sessão em memória até `consumed`/`failed` + TTL 15min.
+- WPP-15: WHEN o frontend reabre uma sessão já em `extracted`/`consumed`/`failed`, THEN o backend SHALL responder com o último estado como primeira mensagem e fechar o stream em seguida (sem manter conexão ociosa).
 
 **US-06 — Limite de sessões simultâneas por IP**
-- WPP-16: WHEN o mesmo IP cria > 3 sessões `pending` em < 5min, THEN o backend SHALL retornar `429 too_many_sessions`.
+- WPP-16: WHEN o mesmo IP cria > 3 sessões `pending` em < 5min, THEN o backend SHALL retornar `429 too_many_sessions` para a 4ª tentativa, sem chamar a uazapi.
 
 ### P3 — Nice to have
 
 **US-07 — Métricas operacionais**
-- WPP-17: Backend SHALL expor `GET /api/whatsapp/_metrics` (autenticado interno) com counts agregados de sessões por status — sem qualquer dado de mensagem.
+- WPP-17: Backend SHALL expor `GET /api/whatsapp/_metrics` (autenticado interno, header `X-Admin-Token`) com counts agregados de sessões por status nas últimas 24h — sem qualquer dado de mensagem.
 
 ## Out of scope (desta feature)
-- Reaproveitamento da sessão entre dispositivos / persistência longa do `authState`.
+- Reaproveitamento de instâncias uazapi entre usuários ou entre dispositivos do mesmo usuário.
 - Múltiplos números por usuário.
-- Filtros por contato/conversa.
+- Filtros por contato/conversa via UI.
 - Envio de mensagens em nome do usuário.
 - Extração de mídia, áudios, documentos, status.
 - Detecção de "domínio saúde" — fica em F3 (Report Processing).
-- Migration das tabelas Supabase (`medzee_whatsapp_sessions`) — entregue em F2 junto das outras tabelas para uma migration única, mas o **schema** já está descrito em `.specs/codebase/ARCHITECTURE.md` e nesta spec.
+- Migration das tabelas Supabase (`medzee_whatsapp_sessions` etc.) — entregue em F2 junto das outras tabelas para uma migration única. **Schema** já está descrito em [.specs/codebase/ARCHITECTURE.md](.specs/codebase/ARCHITECTURE.md) e nesta spec.
 
 ## Edge cases e tratamentos
-- **EC-01** — Usuário não escaneia em 60s: sidecar emite `expired`; backend marca `failed (qr_expired)`; frontend mostra "Tentar novamente" que cria nova sessão.
-- **EC-02** — Clínica sem mensagens nos últimos 30 dias: extract retorna `messageCount=0`; status vai para `extracted`; F3 (em outra feature) gera relatório com fallback "dados insuficientes".
-- **EC-03** — Mais de 10k mensagens: extract limita a 30 dias mas não a count; se ultrapassar 60s, sidecar deve manter conexão e empurrar progresso (`extracting` com `{ collected: n }`).
-- **EC-04** — Conexão derruba durante `extracting`: sidecar tenta `1x` reconectar; se falhar, evento `failed (extract_failed)`.
-- **EC-05** — Sidecar reinicia: backend detecta via timeout no health-check e marca todas as sessões ativas como `failed (sidecar_restart)`.
-- **EC-06** — Concurrent extract: ignorar segunda chamada de `/extract` no mesmo `sessionId`, retornar `409 already_extracting`.
+- **EC-01** — Usuário não escaneia em 60s: backend detecta via timeout + estado `pending`; pode renovar QR (WPP-05) até 3x; se passar 3min sem `connected`, marca `failed (qr_expired)`; frontend mostra "Tentar novamente" que cria nova sessão.
+- **EC-02** — Clínica sem mensagens nos últimos 30 dias: `chat/find` retorna lista vazia OU `message/find` retorna 0 em todos os chats; `messageCount=0`; status vai para `extracted`; F3 (em outra feature) gera relatório com fallback "dados insuficientes".
+- **EC-03** — Mais de 10k mensagens: extract continua até cortar por timestamp; se ultrapassar 90s, emite `extracting` com `{ collected: n, partial: true }` e em 120s força corte salvando o que tem.
+- **EC-04** — Conexão da uazapi cai durante `extracting`: backend tenta `1x` retomar do offset atual; se falhar, evento `failed (extract_failed)`.
+- **EC-05** — Webhook nunca chega (uazapi não consegue alcançar nosso backend, ex.: rodando atrás de NAT em dev): fallback é `GET /instance/status` em poll a cada 5s por até 60s pós-`pending`. Documentar no README como expor o backend via túnel (ngrok/cloudflared) em dev.
+- **EC-06** — Tentativa de criar 2ª sessão para um sessionId já em `extracting`: ignorar, retornar `409 already_extracting`.
 
 ## Dependências
 - **Bloqueia:** F2 (signup precisa do `whatsappSessionId` para linkar `user_id` ao registro existente), F3 (precisa do payload em cache para processar), F4 (frontend `/spy` consome estes endpoints).
-- **Não depende de:** F2/F3/F4. Pode ser desenvolvida e testada via Postman/curl isoladamente.
+- **Não depende de:** F2/F3/F4. Pode ser desenvolvida e testada via Postman/curl isoladamente desde que se tenha um túnel público para o webhook.
 - **Pré-requisitos técnicos:**
-  - Decisão D1 (Baileys via sidecar Node) confirmada.
-  - Subprojeto `whatsapp-sidecar/` criado.
-  - Variáveis `WHATSAPP_SIDECAR_URL`, `WHATSAPP_SIDECAR_TOKEN` adicionadas a `Settings`.
+  - Decisão D1 (uazapi.com) confirmada ✓.
+  - Variáveis `UAZAPI_BASE_URL`, `UAZAPI_ADMIN_TOKEN` configuradas (`backend/.env` ✓).
+  - Container Docker do backend ou túnel HTTPS para receber webhook da uazapi (D7).
+  - Adapter `app/clients/whatsapp/uazapi.py` implementado (ainda a fazer — vai sair do `tasks.md`).
 
 ## Requirement traceability
 
-| ID      | Story | Design (será preenchido) | Task (será preenchido) | Test | Status      |
-| ------- | ----- | ------------------------ | ---------------------- | ---- | ----------- |
-| WPP-01  | US-01 | —                        | —                      | —    | spec'd      |
-| WPP-02  | US-01 | —                        | —                      | —    | spec'd      |
-| WPP-03  | US-01 | —                        | —                      | —    | spec'd      |
-| WPP-04  | US-02 | —                        | —                      | —    | spec'd      |
-| WPP-05  | US-02 | —                        | —                      | —    | spec'd      |
-| WPP-06  | US-02 | —                        | —                      | —    | spec'd      |
-| WPP-07  | US-03 | —                        | —                      | —    | spec'd      |
-| WPP-08  | US-03 | —                        | —                      | —    | spec'd      |
-| WPP-09  | US-03 | —                        | —                      | —    | spec'd      |
-| WPP-10  | US-03 | —                        | —                      | —    | spec'd      |
-| WPP-11  | US-04 | —                        | —                      | —    | spec'd      |
-| WPP-12  | US-04 | —                        | —                      | —    | spec'd      |
-| WPP-13  | US-04 | —                        | —                      | —    | spec'd      |
-| WPP-14  | US-05 | —                        | —                      | —    | spec'd (P2) |
-| WPP-15  | US-05 | —                        | —                      | —    | spec'd (P2) |
-| WPP-16  | US-06 | —                        | —                      | —    | spec'd (P2) |
-| WPP-17  | US-07 | —                        | —                      | —    | spec'd (P3) |
+| ID      | Story | Design | Task | Test | Status      |
+| ------- | ----- | ------ | ---- | ---- | ----------- |
+| WPP-01  | US-01 | —      | —    | —    | spec'd      |
+| WPP-02  | US-01 | —      | —    | —    | spec'd      |
+| WPP-03  | US-01 | —      | —    | —    | spec'd      |
+| WPP-04  | US-02 | —      | —    | —    | spec'd      |
+| WPP-05  | US-02 | —      | —    | —    | spec'd      |
+| WPP-06  | US-02 | —      | —    | —    | spec'd      |
+| WPP-07  | US-03 | —      | —    | —    | spec'd      |
+| WPP-08  | US-03 | —      | —    | —    | spec'd      |
+| WPP-09  | US-03 | —      | —    | —    | spec'd      |
+| WPP-10  | US-03 | —      | —    | —    | spec'd      |
+| WPP-11  | US-04 | —      | —    | —    | spec'd      |
+| WPP-12  | US-04 | —      | —    | —    | spec'd      |
+| WPP-13  | US-04 | —      | —    | —    | spec'd (N/A) |
+| WPP-14  | US-05 | —      | —    | —    | spec'd (P2) |
+| WPP-15  | US-05 | —      | —    | —    | spec'd (P2) |
+| WPP-16  | US-06 | —      | —    | —    | spec'd (P2) |
+| WPP-17  | US-07 | —      | —    | —    | spec'd (P3) |
 
-## Open questions (gray areas → candidatos a `discuss.md`)
-1. **Protocolo do stream frontend ↔ backend** — SSE (mais simples, unidirecional) vs WS (mais flexível, suporta `replay-last` via mensagem inicial). Proposta: **SSE em M1** e migrar para WS se F4 pedir mais interação.
-2. **Storage do auth state Baileys** — filesystem local (mais simples) vs Supabase Storage (multi-instância). Proposta: **filesystem local em M1**; sidecar é stateful single-instance. Documentado em STATE.md/D1.
-3. **Quem dispara `extract`** — automático ao `connected` (proposta atual, WPP-07) vs manual após signup. Proposta atual minimiza tempo total mas usa cache em memória até o consumo; ok dado o TTL 15min e EC-05.
-4. **Mascaramento do número** — só msisdn parcial vs hash determinístico. Proposta: parcial humano-legível (`+55 11 9****-1234`) para a UI; nunca log do número completo.
+## Open questions
+
+Resolvidas:
+- ~~Protocolo do stream frontend ↔ backend (SSE vs WS)~~ → **SSE** (D5).
+- ~~Storage do auth state do Baileys~~ → **N/A** com uazapi (D1).
+- ~~Quem dispara `extract` — automático vs manual~~ → **automático ao webhook `connection`** (D6).
+
+Em aberto:
+1. **Webhook por instância vs global** — uazapi tem `/webhook` (per instance) e `/globalwebhook` (admin, único endpoint para todas as instâncias). Proposta atual: per-instance (mais simples para M1); migrar para global se chegar a centenas de sessões simultâneas (ver "Ideias adiadas" em STATE.md).
+2. **Paralelismo do extract** — quantos `message/find` concurrent? Proposta: 5 inicialmente; ajustar após smoke test (item em "Todos" no STATE.md).
+3. **Política de retry** — uazapi 5xx esporádico merece retry com backoff? Proposta: 2 retries com backoff exponencial (200ms, 800ms) só em GETs/POSTs idempotentes (chat/find, message/find, status).
+4. **Túnel para webhook em dev** — usar ngrok, cloudflared, ou outro? Não-decisão técnica do core; entra no README. Proposta: documentar `cloudflared tunnel --url http://localhost:8000` (gratuito, sem cadastro).
+5. **Mascaramento do número** — manter parcial humano-legível (`+55 11 9****-1234`) ou usar hash determinístico? Proposta atual: parcial para UI; hash só se logarmos algo (que não fazemos).
