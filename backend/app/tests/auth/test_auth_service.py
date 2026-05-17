@@ -290,6 +290,61 @@ async def test_signup_password_too_weak_supabase_error(
     assert "Password is too weak" in str(excinfo.value)
 
 
+async def test_signup_with_whatsapp_session_links_user_to_session_store(
+    fake_supabase_admin,
+    fake_admin_supabase_factory,
+    fake_repository,
+    fake_whatsapp_service,
+    valid_signup_request,
+    monkeypatch,
+):
+    """F4-07: when signup arrives with whatsapp_session_id, AuthService must
+    populate SessionState.user_id in the in-memory store so future webhook
+    `messages` events can attribute new msgs to the right user."""
+    session_id = uuid4()
+    # Patch session_store.update to capture the call
+    store_update = AsyncMock()
+    monkeypatch.setattr(
+        "app.modules.whatsapp.state.session_store.update",
+        store_update,
+    )
+
+    svc = AuthService(supabase=fake_supabase_admin)
+    req = valid_signup_request(whatsapp_session_id=session_id)
+    response = await svc.signup(req)
+
+    # The link call should have happened with the new user_id
+    store_update.assert_awaited_once()
+    args, kwargs = store_update.call_args
+    assert args[0] == session_id
+    assert kwargs.get("user_id") is not None
+    # And the returned user_id should match what we linked
+    assert kwargs["user_id"] == response.user.id
+
+
+async def test_signup_without_whatsapp_session_skips_store_link(
+    fake_supabase_admin,
+    fake_admin_supabase_factory,
+    fake_repository,
+    fake_whatsapp_service,
+    valid_signup_request,
+    monkeypatch,
+):
+    """When whatsapp_session_id is None, no store update call should happen
+    (avoids polluting the store with linkage for sessions that don't exist)."""
+    store_update = AsyncMock()
+    monkeypatch.setattr(
+        "app.modules.whatsapp.state.session_store.update",
+        store_update,
+    )
+
+    svc = AuthService(supabase=fake_supabase_admin)
+    req = valid_signup_request(whatsapp_session_id=None)
+    await svc.signup(req)
+
+    store_update.assert_not_awaited()
+
+
 # --------------------------------------------------------------------------- #
 # login                                                                       #
 # --------------------------------------------------------------------------- #
