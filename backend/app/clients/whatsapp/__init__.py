@@ -57,6 +57,10 @@ class WhatsAppProvider(Protocol):
     async def disconnect(self, session_token: str) -> None:
         ...
 
+    async def delete_instance(self, session_token: str) -> None:
+        """Destroy the instance entry and free the provider's device slot."""
+        ...
+
 
 def get_provider() -> WhatsAppProvider:
     """Return the configured provider instance.

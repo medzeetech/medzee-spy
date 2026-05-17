@@ -412,18 +412,9 @@ class WhatsAppService:
             return
 
         # Best effort — provider may already be gone (banned, network blip…).
-        try:
-            await self._provider.disconnect(state.uazapi_token)
-        except UazapiError as exc:
-            logger.warning(
-                "service.cancel_session.disconnect_failed",
-                extra={
-                    "op": "cancel_session",
-                    "session_id": str(session_id),
-                    "error_class": type(exc).__name__,
-                    "error_code": getattr(exc, "code", "unknown"),
-                },
-            )
+        await self._release_provider_slot(
+            state.uazapi_token, session_id=session_id, op="cancel_session"
+        )
 
         await self._store.publish(
             session_id, SSEEvent(name="expired", data={"reason": "cancelled"})
@@ -513,19 +504,10 @@ class WhatsAppService:
                 },
             )
 
-        # 4. Free the WhatsApp number (best effort).
-        try:
-            await self._provider.disconnect(state.uazapi_token)
-        except UazapiError as exc:
-            logger.warning(
-                "service.consume_extracted.disconnect_failed",
-                extra={
-                    "op": "consume_extracted",
-                    "session_id": str(session_id),
-                    "error_class": type(exc).__name__,
-                    "error_code": getattr(exc, "code", "unknown"),
-                },
-            )
+        # 4. Free the WhatsApp number AND the provider slot (best effort).
+        await self._release_provider_slot(
+            state.uazapi_token, session_id=session_id, op="consume_extracted"
+        )
 
         logger.info(
             "service.consume_extracted.exit",
@@ -571,6 +553,47 @@ class WhatsAppService:
                     },
                 )
                 raise RateLimitExceeded("too_many_sessions")
+
+    async def _release_provider_slot(
+        self,
+        session_token: str,
+        *,
+        session_id: UUID,
+        op: str,
+    ) -> None:
+        """Disconnect WhatsApp + delete the provider instance (best effort).
+
+        WPP-11 demands disconnect on session finalization. We also delete the
+        instance entry (``POST /instance/reset`` on uazapi) so the tenant's
+        device-slot is freed for the next visitor. Both calls are independent:
+        if disconnect fails, we still try delete — the slot recovery is what
+        matters at scale.
+        """
+        try:
+            await self._provider.disconnect(session_token)
+        except UazapiError as exc:
+            logger.warning(
+                "service.release_slot.disconnect_failed",
+                extra={
+                    "op": op,
+                    "session_id": str(session_id),
+                    "error_class": type(exc).__name__,
+                    "error_code": getattr(exc, "code", "unknown"),
+                },
+            )
+
+        try:
+            await self._provider.delete_instance(session_token)
+        except UazapiError as exc:
+            logger.warning(
+                "service.release_slot.delete_failed",
+                extra={
+                    "op": op,
+                    "session_id": str(session_id),
+                    "error_class": type(exc).__name__,
+                    "error_code": getattr(exc, "code", "unknown"),
+                },
+            )
 
     async def _safe_mark_failed(self, session_id: UUID, code: str) -> None:
         """Try to mark a session as failed; swallow secondary errors."""

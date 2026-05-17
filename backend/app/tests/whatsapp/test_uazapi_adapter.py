@@ -204,3 +204,57 @@ async def test_disconnect_happy(
     last_call = mock_uazapi.calls[-1]
     assert last_call.request.url.path == "/instance/disconnect"
     assert last_call.request.headers.get("token") == "tok_xyz"
+
+
+async def test_delete_instance_resets_with_instance_token(
+    mock_uazapi: respx.MockRouter,
+    uazapi_base: str,
+) -> None:
+    """`delete_instance` POSTs to /instance/reset with `token` header so the
+    tenant's device slot is freed for the next visitor."""
+    mock_uazapi.post(f"{uazapi_base}/instance/reset").mock(
+        return_value=httpx.Response(200, json={"status": "reset_ok"})
+    )
+
+    provider = UazapiProvider()
+    try:
+        result = await provider.delete_instance(session_token="tok_xyz")
+    finally:
+        await provider.aclose()
+
+    assert result is None
+    last_call = mock_uazapi.calls[-1]
+    assert last_call.request.url.path == "/instance/reset"
+    assert last_call.request.method == "POST"
+    assert last_call.request.headers.get("token") == "tok_xyz"
+    # Admin operations would use the admintoken header — make sure we DIDN'T.
+    assert "admintoken" not in last_call.request.headers
+
+
+async def test_list_all_instances_uses_admin_token(
+    mock_uazapi: respx.MockRouter,
+    uazapi_base: str,
+) -> None:
+    """`list_all_instances` GETs /instance/all with the admin token header."""
+    fake_instances: list[dict[str, Any]] = [
+        {"id": "inst_a", "token": "tok_a", "status": "disconnected", "name": "X"},
+        {"id": "inst_b", "token": "tok_b", "status": "connected", "name": "Y"},
+    ]
+    mock_uazapi.get(f"{uazapi_base}/instance/all").mock(
+        return_value=httpx.Response(200, json=fake_instances)
+    )
+
+    provider = UazapiProvider()
+    try:
+        result = await provider.list_all_instances()
+    finally:
+        await provider.aclose()
+
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert result[0]["id"] == "inst_a"
+    last_call = mock_uazapi.calls[-1]
+    assert last_call.request.url.path == "/instance/all"
+    assert last_call.request.method == "GET"
+    assert last_call.request.headers.get("admintoken")  # admin auth
+    assert "token" not in {k.lower() for k in last_call.request.headers.keys() if k.lower() == "token"}

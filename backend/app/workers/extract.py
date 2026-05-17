@@ -457,16 +457,25 @@ async def _fail(
     started_at: float,
     chat_count: int,
 ) -> None:
-    """Best-effort disconnect + publish ``failed`` SSE + persist failure."""
-    # Best-effort disconnect — never let cleanup errors mask the original
-    # failure. Re-import the provider locally to keep this helper standalone.
-    try:
-        from app.clients.whatsapp import get_provider
+    """Best-effort disconnect + delete + publish ``failed`` SSE + persist failure."""
+    # Best-effort cleanup — never let provider errors mask the original failure.
+    # Disconnect first (clean WhatsApp logout) then delete the uazapi instance
+    # to free the tenant's device slot for the next visitor.
+    from app.clients.whatsapp import get_provider
 
-        await get_provider().disconnect(state.uazapi_token)
+    provider = get_provider()
+    try:
+        await provider.disconnect(state.uazapi_token)
     except Exception:
         logger.warning(
             "extract pipeline: provider.disconnect failed (ignored)",
+            extra={"session_id": str(session_id), "op": "extract"},
+        )
+    try:
+        await provider.delete_instance(state.uazapi_token)
+    except Exception:
+        logger.warning(
+            "extract pipeline: provider.delete_instance failed (ignored)",
             extra={"session_id": str(session_id), "op": "extract"},
         )
 

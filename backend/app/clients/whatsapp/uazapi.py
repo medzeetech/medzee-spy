@@ -174,6 +174,44 @@ class UazapiProvider:
             json_body={},
         )
 
+    async def delete_instance(self, session_token: str) -> None:
+        """Destroy the uazapi instance and free its device slot.
+
+        Calls ``POST /instance/reset`` which (per the dashboard's "Apagar
+        Instância" action) wipes the instance entry — not just its auth state.
+        Use after ``disconnect`` in any cleanup path so the plan's device slot
+        becomes available for the next session.
+        """
+        await self._request(
+            "POST",
+            "/instance/reset",
+            op="delete_instance",
+            token=session_token,
+            json_body={},
+        )
+
+    async def list_all_instances(self) -> list[dict[str, Any]]:
+        """Admin-only: list every instance under this tenant.
+
+        Used by the orphan-cleanup utility (see scripts/cleanup_orphans.py).
+        Each entry includes the per-instance token, so the caller can pair it
+        with ``delete_instance`` to wipe slots that the normal lifecycle never
+        cleaned up (e.g., process crashed mid-extract).
+        """
+        payload = await self._request(
+            "GET",
+            "/instance/all",
+            op="list_all_instances",
+            token=settings.UAZAPI_ADMIN_TOKEN,
+            token_header="admintoken",
+        )
+        # /instance/all returns a JSON array; _request wraps non-dict in {"data": ...}.
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            return payload["data"]
+        if isinstance(payload, list):
+            return payload
+        return []
+
     async def _request(
         self,
         method: str,
