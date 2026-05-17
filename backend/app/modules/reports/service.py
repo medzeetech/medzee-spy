@@ -192,6 +192,45 @@ async def _build_and_run(
         since = datetime.now(timezone.utc) - timedelta(days=period_days)
         captured = await captured_repo.query_window_for_user(user_id, since=since)
         payload = _build_extracted_payload(captured)
+        source = "captured_messages"
+
+        # Fallback uazapi: se a query local veio vazia (webhook não tá
+        # entregando 'messages' nesse tier), puxa o histórico direto via
+        # /chat/find + /message/find. Usa a mesma janela escolhida pelo
+        # user. Sem isso o usuário em tier com webhook quebrado nunca
+        # consegue gerar relatório on-demand.
+        if payload.message_count == 0:
+            logger.info(
+                "service.reports.captured_empty_fallback_uazapi",
+                extra={
+                    "report_id": str(report_id),
+                    "user_id": str(user_id),
+                    "period_days": period_days,
+                },
+            )
+            try:
+                from app.clients.whatsapp import get_provider
+                from app.modules.whatsapp import repository as whatsapp_repo
+                from app.workers.extract import pull_history
+
+                session = await whatsapp_repo.get_active_for_user(user_id)
+                if session and session.get("uazapi_token"):
+                    provider = get_provider()
+                    payload = await pull_history(
+                        provider,
+                        session["uazapi_token"],
+                        days_window=period_days,
+                    )
+                    source = "uazapi_history"
+            except Exception:
+                logger.warning(
+                    "service.reports.uazapi_fallback_failed",
+                    extra={
+                        "report_id": str(report_id),
+                        "user_id": str(user_id),
+                    },
+                    exc_info=True,
+                )
 
         logger.info(
             "service.reports.payload_built",
@@ -201,6 +240,7 @@ async def _build_and_run(
                 "period_days": period_days,
                 "messages": payload.message_count,
                 "conversations": payload.conversation_count,
+                "source": source,
             },
         )
 

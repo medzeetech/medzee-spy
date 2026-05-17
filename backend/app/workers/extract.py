@@ -611,4 +611,107 @@ async def _run_report_with_user(
     await pipeline(session_id, payload, user_id=user_id)
 
 
-__all__ = ["extract_30d_pipeline"]
+async def pull_history(
+    provider, session_token: str, *, days_window: int
+) -> ExtractedPayload:
+    """Puxa N dias de histórico via uazapi e devolve ExtractedPayload pronto.
+
+    Diferente de :func:`extract_30d_pipeline`, este NÃO tem side effects: não
+    publica SSE, não atualiza store/DB, não dispara worker de report. Foi
+    desenhado pra ser chamado pelo /api/reports/generate como FALLBACK quando
+    ``captured_messages`` está vazio (webhook não funciona nesse tier do
+    uazapi). O caller (``reports.service._build_and_run``) usa a payload
+    devolvida pra dispatch do worker F3 normalmente.
+
+    Sem retry/SSE/progresso: roda em background do request, demora o que
+    demorar (uazapi paid responde rápido o suficiente — testes empíricos
+    300-500ms por /message/find). Se falhar a meio, retorna o que conseguiu
+    com ``partial=True``.
+    """
+    cutoff_ts = int(
+        (datetime.now(timezone.utc) - timedelta(days=days_window)).timestamp()
+    )
+
+    # Listar todos os chats
+    chats: list[Chat] = []
+    offset = 0
+    while True:
+        page, has_more = await provider.list_chats(
+            session_token, limit=_PAGE_SIZE, offset=offset
+        )
+        chats.extend(page)
+        if not has_more:
+            break
+        offset += _PAGE_SIZE
+
+    conversations: list[ConversationPayload] = []
+    partial = False
+    for chat in chats:
+        try:
+            msgs: list[MessagePayload] = []
+            msg_offset = 0
+            while True:
+                page, has_more, next_offset = await provider.list_messages(
+                    session_token,
+                    chat.wa_chatid,
+                    limit=_PAGE_SIZE,
+                    offset=msg_offset,
+                )
+                old_found = False
+                for m in page:
+                    if m.ts < cutoff_ts:
+                        old_found = True
+                        break
+                    if m.type == "text" and m.text:
+                        msgs.append(
+                            MessagePayload(
+                                ts=m.ts,
+                                from_me=m.from_me,
+                                type=m.type,
+                                text=m.text,
+                            )
+                        )
+                if old_found or not has_more:
+                    break
+                msg_offset = next_offset
+
+            if msgs:
+                conversations.append(
+                    ConversationPayload(
+                        wa_chatid=chat.wa_chatid,
+                        contact_name=chat.contact_name,
+                        is_group=chat.is_group,
+                        last_message_at=chat.last_message_at,
+                        messages=msgs,
+                    )
+                )
+        except Exception:
+            # Não interrompe a coleta toda por um chat ruim — log e segue.
+            partial = True
+            logger.warning(
+                "pull_history: chat failed (ignored)",
+                extra={"op": "pull_history", "chatid": chat.wa_chatid},
+                exc_info=True,
+            )
+
+    payload = ExtractedPayload(
+        message_count=sum(len(c.messages) for c in conversations),
+        conversation_count=len(conversations),
+        conversations=conversations,
+        partial=partial,
+    )
+    logger.info(
+        "pull_history.done",
+        extra={
+            "op": "pull_history",
+            "days_window": days_window,
+            "chat_count": len(chats),
+            "conversation_count": payload.conversation_count,
+            "message_count": payload.message_count,
+            "partial": partial,
+        },
+    )
+    return payload
+
+
+__all__ = ["extract_30d_pipeline", "pull_history"]

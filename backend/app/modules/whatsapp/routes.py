@@ -367,9 +367,14 @@ async def whatsapp_status(
     session_id = UUID(str(session["id"]))
     stats = await captured_repo.stats_for_session(session_id)
 
+    # Connected = WhatsApp ainda ativo, mesmo durante/após o F1 extract.
+    # Sem isso, a UI mostra "WhatsApp não conectado" durante 'extracting'/
+    # 'extracted', confundindo o usuário (o WhatsApp tá conectado no celular
+    # dele, só o nosso pipeline tá processando).
+    _ALIVE_STATUSES = {"connected", "extracting", "extracted"}
     return SuccessResponse(
         data=WhatsappStatusResponse(
-            connected=session.get("status") == "connected",
+            connected=session.get("status") in _ALIVE_STATUSES,
             session_id=session_id,
             connected_since=session.get("connected_at"),
             message_count=stats["message_count"],

@@ -151,14 +151,17 @@ async def generate_report(
     # 1. Rate limit
     _check_rate_limit(user_id)
 
-    # 2. Min volume — lazy import pra não acoplar reports.routes ao módulo
-    #    captured_messages na import chain.
+    # 2. Min volume: bloqueia 422 só quando NEM captured_messages NEM
+    #    uazapi history podem fornecer dados. Hierarquia:
+    #      a) captured_messages >= _GENERATE_MIN_MESSAGES → libera direto.
+    #      b) captured < threshold MAS user tem sessão WhatsApp ativa
+    #         (connected/extracting/extracted) → libera porque o worker
+    #         vai puxar via fallback uazapi (extract.pull_history).
+    #      c) captured < threshold E sem sessão ativa → 422 not_enough_data.
     try:
         from app.modules.captured_messages import repository as captured_repo
         stats = await captured_repo.stats_for_user(user_id)
     except Exception:
-        # Se o repo de captured falhar, ainda permite gerar (worker vai
-        # criar relatório vazio que vai falhar com diagnóstico claro).
         logger.warning(
             "route.reports.generate.stats_check_failed",
             extra={"user_id": str(user_id)},
@@ -167,9 +170,35 @@ async def generate_report(
         stats = {"message_count": 0}
 
     if stats.get("message_count", 0) < _GENERATE_MIN_MESSAGES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="not_enough_data",
+        # Confere se tem sessão WhatsApp ativa pra deixar o fallback rodar.
+        active_session = None
+        try:
+            from app.modules.whatsapp import repository as whatsapp_repo
+            active_session = await whatsapp_repo.get_active_for_user(user_id)
+        except Exception:
+            logger.warning(
+                "route.reports.generate.session_check_failed",
+                extra={"user_id": str(user_id)},
+                exc_info=True,
+            )
+
+        has_active = (
+            active_session is not None
+            and active_session.get("status")
+            in ("connected", "extracting", "extracted")
+            and active_session.get("uazapi_token")
+        )
+        if not has_active:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="not_enough_data",
+            )
+        logger.info(
+            "route.reports.generate.allow_via_uazapi_fallback",
+            extra={
+                "user_id": str(user_id),
+                "captured_count": stats.get("message_count", 0),
+            },
         )
 
     # 3. Dispatch
