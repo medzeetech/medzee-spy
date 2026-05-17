@@ -17,6 +17,7 @@ from app.clients.whatsapp.errors import (
     UazapiBanned,
     UazapiTimeout,
     UazapiUnavailable,
+    UazapiUnknown,
 )
 from app.clients.whatsapp.types import ProviderSession
 from app.clients.whatsapp.uazapi import UazapiProvider
@@ -260,3 +261,168 @@ async def test_list_all_instances_uses_admin_token(
     assert last_call.request.method == "GET"
     assert last_call.request.headers.get("admintoken")  # admin auth
     assert "token" not in {k.lower() for k in last_call.request.headers.keys() if k.lower() == "token"}
+
+
+# --------------------------------------------------------------------------- #
+# F3 / B3 — _retry_5xx: transient 5xx retries with exponential backoff       #
+# --------------------------------------------------------------------------- #
+
+
+async def test_list_chats_retries_on_5xx_then_succeeds(
+    mock_uazapi: respx.MockRouter,
+    uazapi_base: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B3: ``/chat/find`` returns 500 twice (sync still in flight) then 200.
+    The retry helper transparently absorbs both failures and returns the
+    successful body. respx must record exactly 3 calls."""
+    # Zero out the backoff so the test doesn't actually wait 7s+.
+    monkeypatch.setattr(
+        "app.clients.whatsapp.uazapi._RETRY_DELAYS_S", (0.0, 0.0, 0.0)
+    )
+
+    success_body = {
+        "chats": [
+            {
+                "wa_chatid": "5511999990001@s.whatsapp.net",
+                "name": "Paciente A",
+                "is_group": False,
+                "last_message_at": 1_700_000_000,
+            }
+        ],
+        "hasMore": False,
+    }
+    mock_uazapi.post(f"{uazapi_base}/chat/find").mock(
+        side_effect=[
+            httpx.Response(500, json={"error": "history sync in progress"}),
+            httpx.Response(500, json={"error": "history sync in progress"}),
+            httpx.Response(200, json=success_body),
+        ]
+    )
+
+    provider = UazapiProvider()
+    try:
+        chats, has_more = await provider.list_chats(
+            session_token="tok_xyz", limit=100, offset=0
+        )
+    finally:
+        await provider.aclose()
+
+    assert len(chats) == 1
+    assert chats[0].wa_chatid == "5511999990001@s.whatsapp.net"
+    assert has_more is False
+
+    chat_calls = [c for c in mock_uazapi.calls if c.request.url.path == "/chat/find"]
+    assert len(chat_calls) == 3, "should retry twice then succeed (3 calls total)"
+
+
+async def test_list_chats_retry_exhausted_raises_unavailable(
+    mock_uazapi: respx.MockRouter,
+    uazapi_base: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B3: after the full retry budget (1 initial + 3 retries = 4 attempts)
+    the last ``UazapiUnavailable`` is re-raised to the caller."""
+    monkeypatch.setattr(
+        "app.clients.whatsapp.uazapi._RETRY_DELAYS_S", (0.0, 0.0, 0.0)
+    )
+
+    mock_uazapi.post(f"{uazapi_base}/chat/find").mock(
+        side_effect=[
+            httpx.Response(500, json={"error": "down"}),
+            httpx.Response(500, json={"error": "down"}),
+            httpx.Response(500, json={"error": "down"}),
+            httpx.Response(500, json={"error": "down"}),
+        ]
+    )
+
+    provider = UazapiProvider()
+    try:
+        with pytest.raises(UazapiUnavailable):
+            await provider.list_chats(
+                session_token="tok_xyz", limit=100, offset=0
+            )
+    finally:
+        await provider.aclose()
+
+    chat_calls = [c for c in mock_uazapi.calls if c.request.url.path == "/chat/find"]
+    assert len(chat_calls) == 4, "should attempt 4 times then give up"
+
+
+async def test_list_chats_4xx_no_retry(
+    mock_uazapi: respx.MockRouter,
+    uazapi_base: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4xx is NOT transient: ``_request`` maps it to ``UazapiUnknown`` and
+    ``_retry_5xx`` re-raises immediately without retry. respx must record
+    only a single call."""
+    monkeypatch.setattr(
+        "app.clients.whatsapp.uazapi._RETRY_DELAYS_S", (0.0, 0.0, 0.0)
+    )
+
+    mock_uazapi.post(f"{uazapi_base}/chat/find").mock(
+        return_value=httpx.Response(400, json={"error": "bad request"})
+    )
+
+    provider = UazapiProvider()
+    try:
+        with pytest.raises(UazapiUnknown):
+            await provider.list_chats(
+                session_token="tok_xyz", limit=100, offset=0
+            )
+    finally:
+        await provider.aclose()
+
+    chat_calls = [c for c in mock_uazapi.calls if c.request.url.path == "/chat/find"]
+    assert len(chat_calls) == 1, "4xx must not trigger retries"
+
+
+async def test_list_messages_retries_on_5xx(
+    mock_uazapi: respx.MockRouter,
+    uazapi_base: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bonus: ``list_messages`` (also wrapped in ``_retry_5xx``) recovers
+    from a transient 500 the same way ``list_chats`` does."""
+    monkeypatch.setattr(
+        "app.clients.whatsapp.uazapi._RETRY_DELAYS_S", (0.0, 0.0, 0.0)
+    )
+
+    success_body: dict[str, Any] = {
+        "messages": [
+            {
+                "ts": 1_700_000_000,
+                "fromMe": False,
+                "type": "text",
+                "text": "oi",
+            }
+        ],
+        "hasMore": False,
+        "nextOffset": 1,
+    }
+    mock_uazapi.post(f"{uazapi_base}/message/find").mock(
+        side_effect=[
+            httpx.Response(500, json={"error": "transient"}),
+            httpx.Response(200, json=success_body),
+        ]
+    )
+
+    provider = UazapiProvider()
+    try:
+        messages, has_more, next_offset = await provider.list_messages(
+            session_token="tok_xyz",
+            chat_id="5511999990001@s.whatsapp.net",
+            limit=100,
+            offset=0,
+        )
+    finally:
+        await provider.aclose()
+
+    assert len(messages) == 1
+    assert messages[0].text == "oi"
+    assert has_more is False
+    assert next_offset == 1
+
+    msg_calls = [c for c in mock_uazapi.calls if c.request.url.path == "/message/find"]
+    assert len(msg_calls) == 2, "should retry once then succeed"

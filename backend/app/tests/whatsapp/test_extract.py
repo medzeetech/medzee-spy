@@ -318,3 +318,56 @@ async def test_hard_timeout_partial(
     assert state.last_event is not None
     assert state.last_event.name == "extracted"
     assert state.last_event.data.get("partial") is True
+
+
+# --------------------------------------------------------------------------- #
+# 7. F3 §REPORT-11: _finalize_success fires _kick_off_report                  #
+# --------------------------------------------------------------------------- #
+
+
+async def test_finalize_success_kicks_off_report(
+    isolated_store: SessionStore,
+    fake_provider: AsyncMock,
+    fake_repo: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On the happy path the extract worker MUST trigger the report
+    generation worker exactly once via ``_kick_off_report``. The autouse
+    ``_no_op_report_kickoff`` fixture replaces it with a no-op for backward
+    compat — we override that locally with a spy that captures invocations."""
+    sid = await _seed_connected_session(isolated_store)
+
+    captured: list[dict] = []
+
+    def _spy(session_id, payload):
+        captured.append({"session_id": session_id, "payload": payload})
+
+    # Override the autouse no-op fixture for this test only.
+    monkeypatch.setattr(
+        "app.workers.extract._kick_off_report", _spy, raising=False
+    )
+
+    chat = Chat(
+        wa_chatid="5511444440001@s.whatsapp.net",
+        contact_name="Patient",
+        is_group=False,
+        last_message_at=_now_ts(),
+    )
+    fake_provider.list_chats.return_value = ([chat], False)
+    fake_provider.list_messages.return_value = (
+        [Message(ts=_ts_days_ago(1), from_me=False, type="text", text="oi")],
+        False,
+        1,
+    )
+
+    await extract_mod.extract_30d_pipeline(sid)
+
+    state = await isolated_store.get(sid)
+    assert state is not None
+    assert state.status == SessionStatus.EXTRACTED
+
+    assert len(captured) == 1, "report worker must be kicked off exactly once"
+    assert captured[0]["session_id"] == sid
+    # Payload carries the extracted data — `partial=False` on the happy path.
+    assert captured[0]["payload"].partial is False
+    assert captured[0]["payload"].message_count == 1

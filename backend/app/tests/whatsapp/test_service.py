@@ -420,3 +420,80 @@ async def test_consume_extracted_skips_release_when_already_terminal(
     mock_provider.disconnect.assert_not_called()
     # The DB write + user link should still happen — only the provider call is skipped.
     mock_repo.link_user.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------- #
+# 12. consume_extracted — also links the user on the reports row (F3)        #
+# --------------------------------------------------------------------------- #
+
+
+async def test_consume_extracted_calls_reports_link_user(
+    mock_provider: AsyncMock,
+    mock_repo: MagicMock,
+    fresh_store: SessionStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F3 §REPORT-12: after linking the whatsapp_sessions row to the user,
+    consume_extracted must also link the matching reports row. The import
+    is lazy inside service.consume_extracted, so we patch the function on
+    its origin module (``app.modules.reports.repository``)."""
+    from uuid import uuid4
+
+    reports_link_user = AsyncMock(name="reports.repository.link_user")
+    monkeypatch.setattr(
+        "app.modules.reports.repository.link_user", reports_link_user
+    )
+
+    svc = _svc(mock_provider, fresh_store)
+    resp = await svc.create_session(client_ip="7.7.7.7")
+    sid = resp.session_id
+    await fresh_store.update(sid, status=SessionStatus.EXTRACTED)
+
+    user_id = uuid4()
+    await svc.consume_extracted(sid, user_id=user_id)
+
+    reports_link_user.assert_awaited_once_with(sid, user_id)
+    # And the whatsapp-side link still happened too.
+    mock_repo.link_user.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------- #
+# 13. consume_extracted — swallows reports.link_user failures                 #
+# --------------------------------------------------------------------------- #
+
+
+async def test_consume_extracted_swallows_reports_link_failure(
+    mock_provider: AsyncMock,
+    mock_repo: MagicMock,
+    fresh_store: SessionStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure inside ``reports.repository.link_user`` is best-effort —
+    consume_extracted must log a warning and continue (mark_consumed still
+    runs, payload still returns). Without this guarantee a transient
+    reports outage would break the user-facing signup flow."""
+    from uuid import uuid4
+
+    reports_link_user = AsyncMock(
+        name="reports.repository.link_user",
+        side_effect=RuntimeError("reports schema down"),
+    )
+    monkeypatch.setattr(
+        "app.modules.reports.repository.link_user", reports_link_user
+    )
+
+    svc = _svc(mock_provider, fresh_store)
+    resp = await svc.create_session(client_ip="7.7.7.8")
+    sid = resp.session_id
+    await fresh_store.update(sid, status=SessionStatus.EXTRACTED)
+
+    user_id = uuid4()
+    # Should NOT raise.
+    result = await svc.consume_extracted(sid, user_id=user_id)
+
+    # No exception propagated; result is the (possibly-None) payload — what
+    # matters here is that the call returned and downstream steps ran.
+    assert result is None or hasattr(result, "message_count")
+    reports_link_user.assert_awaited_once_with(sid, user_id)
+    mock_repo.mark_consumed.assert_awaited_once()
+    mock_repo.link_user.assert_awaited_once()
