@@ -20,28 +20,24 @@ async def lifespan(app: FastAPI):
             settings.API_BASE_URL,
         )
 
-    # Always-on config dump: logs URL prefixes + token lengths so we can
-    # diagnose env-var formatting issues (literal quotes from Railway dashboard,
-    # accidental empties) without restarting blind. Token values are never
-    # logged — only length + first/last char as fingerprints.
+    # Always-on config dump via print() to bypass any logger filtering — INFO
+    # logs were being dropped by the default root logger config on Railway.
+    # Token values are never logged — only length + first/last char fingerprints.
     def _fingerprint(value: str) -> str:
         if not value:
             return "<empty>"
-        first = value[0] if value else ""
-        last = value[-1] if value else ""
-        return f"len={len(value)} first={first!r} last={last!r}"
+        return f"len={len(value)} first={value[0]!r} last={value[-1]!r}"
 
-    logger.info(
-        "config dump: API_BASE_URL=%r UAZAPI_BASE_URL=%r "
-        "UAZAPI_ADMIN_TOKEN=%s SUPABASE_URL=%r SUPABASE_KEY=%s "
-        "SUPABASE_SERVICE_ROLE_KEY=%s ANTHROPIC_API_KEY=%s",
-        settings.API_BASE_URL,
-        settings.UAZAPI_BASE_URL,
-        _fingerprint(settings.UAZAPI_ADMIN_TOKEN),
-        settings.SUPABASE_URL,
-        _fingerprint(settings.SUPABASE_KEY),
-        _fingerprint(settings.SUPABASE_SERVICE_ROLE_KEY),
-        _fingerprint(settings.ANTHROPIC_API_KEY),
+    print(
+        "CONFIG_DUMP "
+        f"API_BASE_URL={settings.API_BASE_URL!r} "
+        f"UAZAPI_BASE_URL={settings.UAZAPI_BASE_URL!r} "
+        f"UAZAPI_ADMIN_TOKEN=[{_fingerprint(settings.UAZAPI_ADMIN_TOKEN)}] "
+        f"SUPABASE_URL={settings.SUPABASE_URL!r} "
+        f"SUPABASE_KEY=[{_fingerprint(settings.SUPABASE_KEY)}] "
+        f"SUPABASE_SERVICE_ROLE_KEY=[{_fingerprint(settings.SUPABASE_SERVICE_ROLE_KEY)}] "
+        f"ANTHROPIC_API_KEY=[{_fingerprint(settings.ANTHROPIC_API_KEY)}]",
+        flush=True,
     )
 
     for name, value in (
