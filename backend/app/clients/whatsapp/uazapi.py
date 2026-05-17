@@ -7,10 +7,11 @@ callers never see raw `httpx` exceptions.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from types import TracebackType
-from typing import Any
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 import httpx
@@ -29,6 +30,45 @@ logger = logging.getLogger(__name__)
 
 
 _PROVIDER_CODE_BANNED = 463
+
+# B3 fix (F3 §REPORT-15): uazapi free returns 500 on /chat/find right
+# after connect because the history sync is still in flight. We retry up
+# to 3 times with exponential backoff. 4xx propagates immediately (not
+# transient). Only applied to the heavy data-pulling ops (list_chats /
+# list_messages) — create/connect/delete stay on a single attempt.
+_RETRY_DELAYS_S: tuple[float, ...] = (2.0, 5.0, 12.0)
+
+
+async def _retry_5xx(
+    call: Callable[[], Awaitable[Any]], *, op: str, **log_extra: Any
+) -> Any:
+    """Run ``call()``; retry on ``UazapiUnavailable`` with exponential backoff.
+
+    Up to ``len(_RETRY_DELAYS_S)`` retries. After the budget is exhausted,
+    the last ``UazapiUnavailable`` is re-raised. Any other exception
+    propagates immediately (e.g. 4xx → ``UazapiError`` family).
+    """
+    last_exc: UazapiUnavailable | None = None
+    attempts = len(_RETRY_DELAYS_S) + 1
+    for attempt in range(attempts):
+        try:
+            return await call()
+        except UazapiUnavailable as exc:
+            last_exc = exc
+            if attempt >= len(_RETRY_DELAYS_S):
+                break
+            delay = _RETRY_DELAYS_S[attempt]
+            logger.warning(
+                "uazapi op=%s 5xx_retry attempt=%d/%d delay_s=%s",
+                op,
+                attempt + 1,
+                attempts,
+                delay,
+                extra=log_extra,
+            )
+            await asyncio.sleep(delay)
+    assert last_exc is not None  # loop only exits via raise or break-with-exc
+    raise last_exc
 
 
 class UazapiProvider:
@@ -134,13 +174,20 @@ class UazapiProvider:
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[Chat], bool]:
-        payload = await self._request(
-            "POST",
-            "/chat/find",
-            op="list_chats",
-            token=session_token,
-            json_body={"limit": limit, "offset": offset, "sort": "last_message_desc"},
-        )
+        async def _do() -> Any:
+            return await self._request(
+                "POST",
+                "/chat/find",
+                op="list_chats",
+                token=session_token,
+                json_body={
+                    "limit": limit,
+                    "offset": offset,
+                    "sort": "last_message_desc",
+                },
+            )
+
+        payload = await _retry_5xx(_do, op="list_chats")
         raw_chats = _extract_collection(payload, ("chats", "data", "results"))
         chats = [_parse_chat(item) for item in raw_chats]
         has_more = _extract_has_more(payload)
@@ -155,13 +202,16 @@ class UazapiProvider:
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[Message], bool, int]:
-        payload = await self._request(
-            "POST",
-            "/message/find",
-            op="list_messages",
-            token=session_token,
-            json_body={"chatid": chat_id, "limit": limit, "offset": offset},
-        )
+        async def _do() -> Any:
+            return await self._request(
+                "POST",
+                "/message/find",
+                op="list_messages",
+                token=session_token,
+                json_body={"chatid": chat_id, "limit": limit, "offset": offset},
+            )
+
+        payload = await _retry_5xx(_do, op="list_messages")
         raw_messages = _extract_collection(payload, ("messages", "data", "results"))
         messages = [_parse_message(item) for item in raw_messages]
         has_more = _extract_has_more(payload)

@@ -23,6 +23,21 @@ import respx
 from app.core.config import settings
 
 
+@pytest.fixture(autouse=True)
+def _disable_extract_post_connected_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B3 fix introduced a 5s sleep before the first /chat/find. Tests would
+    otherwise spend an extra 5s per extract scenario — autouse this patch so
+    every whatsapp test sees a zero delay. The constant lives in
+    ``app.workers.extract`` (F3 §REPORT-14)."""
+    try:
+        from app import workers
+        monkeypatch.setattr(
+            "app.workers.extract._POST_CONNECTED_DELAY_S", 0.0, raising=False
+        )
+    except ImportError:  # pragma: no cover — defensive if module renamed
+        pass
+
+
 # Stable test URL — tests must monkeypatch settings.UAZAPI_BASE_URL to this
 # so the adapter's httpx.AsyncClient (constructed lazily with that base_url)
 # routes through respx.

@@ -76,6 +76,12 @@ _PROGRESS_EVERY_N_CHATS: int = 5
 # Page size used against uazapi for both chat/find and message/find.
 _PAGE_SIZE: int = 100
 
+# B3 fix (F3 §REPORT-14): uazapi free tier returns 500 on /chat/find
+# immediately after `connected` — the internal history sync hasn't
+# finished yet. Wait ~5s before the first call. Tests monkeypatch this
+# constant to 0 to stay fast.
+_POST_CONNECTED_DELAY_S: float = 5.0
+
 
 async def extract_30d_pipeline(session_id: UUID) -> None:
     """Run the 30-day extraction pipeline for ``session_id``.
@@ -133,6 +139,10 @@ async def extract_30d_pipeline(session_id: UUID) -> None:
     # timeout work (see module docstring).
     conversations: list[ConversationPayload] = []
     total_chats: int = 0
+
+    # B3: give uazapi free a head start on history sync (REPORT-14).
+    if _POST_CONNECTED_DELAY_S > 0:
+        await asyncio.sleep(_POST_CONNECTED_DELAY_S)
 
     try:
         async with asyncio.timeout(settings.EXTRACT_HARD_TIMEOUT_S):
