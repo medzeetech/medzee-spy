@@ -6,6 +6,7 @@ import LeadFormScreen from './LeadFormScreen.jsx';
 
 export default function SpyFlow() {
   const [phase, setPhase] = useState('qr');
+  const [whatsappSessionId, setWhatsappSessionId] = useState(null);
   const navigate = useNavigate();
 
   const goGenerating = () => setPhase('generating');
@@ -13,7 +14,7 @@ export default function SpyFlow() {
   const goApp = () => navigate('/app/reports/latest');
   const reset = () => setPhase('qr');
 
-  if (phase === 'qr') return <QRScreen onSimulate={goGenerating} />;
+  if (phase === 'qr') return <QRScreen onSimulate={goGenerating} onSessionCreated={setWhatsappSessionId} />;
   if (phase === 'generating') return <GeneratingScreen onComplete={goLead} />;
-  return <LeadFormScreen onSubmit={goApp} showTicketMedio />;
+  return <LeadFormScreen onSubmit={goApp} showTicketMedio whatsappSessionId={whatsappSessionId} />;
 }

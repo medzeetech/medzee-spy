@@ -30,7 +30,7 @@ function Corner({ position }) {
   return <div style={styles[position]} />;
 }
 
-export default function QRScreen({ onSimulate }) {
+export default function QRScreen({ onSimulate, onSessionCreated }) {
   const [sessionId, setSessionId] = useState(null);
   const [qrBase64, setQrBase64] = useState(null);
   const [phase, setPhase] = useState('loading'); // loading | qr-ready | connected | failed
@@ -126,12 +126,13 @@ export default function QRScreen({ onSimulate }) {
       setSessionId(data.session_id);
       setQrBase64(data.qr);
       setPhase('qr-ready');
+      onSessionCreated?.(data.session_id);
       attachSSE(data.session_id);
     } catch (e) {
       setError(`Sem conexão com o backend: ${e.message || 'desconhecido'}`);
       setPhase('failed');
     }
-  }, [attachSSE, cleanupSSE]);
+  }, [attachSSE, cleanupSSE, onSessionCreated]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional kick-off

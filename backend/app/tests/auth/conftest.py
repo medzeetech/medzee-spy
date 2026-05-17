@@ -57,11 +57,15 @@ def fake_supabase_admin() -> MagicMock:
     last assignment wins. Inspect calls via the same chain
     (``.call_args``, ``.assert_called_once_with(...)``).
     """
-    fake = MagicMock(spec=Client, name="supabase_admin_client")
-
-    # supabase-py's Client.auth is a GoTrueClient; we don't spec it because the
-    # nested attribute chain (.auth.admin.create_user, .auth.sign_in_with_password)
-    # is what auth.service.py will call, and MagicMock auto-vivifies those.
+    # NOTE: ``spec=Client`` is intentionally **not** used. supabase-py's
+    # ``Client.auth`` is a lazy ``@cached_property`` defined per-instance, so
+    # it's invisible to ``MagicMock(spec=Client)`` — that spec would block
+    # the ``.auth.admin.create_user`` chain that ``auth.service`` calls. Plain
+    # MagicMock auto-vivifies the chain instead, which is what we need.
+    fake = MagicMock(name="supabase_admin_client")
+    # Import kept for type-only documentation — if a future maintainer
+    # re-introduces spec=Client, the import is still here for them.
+    _ = Client
     default_resp = _build_fake_session(TEST_USER_ID, "x@y.com")
     fake.auth.admin.create_user.return_value = default_resp
     fake.auth.admin.delete_user.return_value = None

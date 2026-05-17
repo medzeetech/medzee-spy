@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { User, Mail, Phone, ArrowRight, ArrowLeft, Volume2, Lock, DollarSign, Eye, EyeOff } from 'lucide-react';
 import { COLORS } from '../constants/colors.js';
 import Logo from '../components/Logo.jsx';
+import { api } from '../lib/api.js';
+import { supabase } from '../lib/supabase.js';
 import resultadoAudio from '../assets/resultado.mp3';
 
 function maskPhone(value) {
@@ -43,7 +46,8 @@ function maskCurrency(value) {
   return num.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-export default function LeadFormScreen({ onSubmit, showTicketMedio = false }) {
+export default function LeadFormScreen({ onSubmit, showTicketMedio = false, whatsappSessionId = null }) {
+  const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -55,6 +59,8 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = false }) {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [touched, setTouched] = useState({});
   const [submitting, setSubmitting] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [error, setError] = useState(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
   const audioRef = useRef(null);
 
@@ -96,19 +102,57 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = false }) {
     setTouched({});
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setTouched({ password: true, confirmPassword: true });
     if (!step2Valid || submitting) return;
     setSubmitting(true);
+    setFieldErrors({});
+    setError(null);
+
+    const normalizedEmail = email.trim().toLowerCase();
     const payload = {
       name: name.trim(),
-      email: email.trim().toLowerCase(),
+      email: normalizedEmail,
       phone,
       password,
+      ticket_medio: ticketMedio ? parseFloat(ticketMedio.replace(/\D/g, '')) / 100 : null,
+      whatsapp_session_id: whatsappSessionId ?? null,
     };
-    if (showTicketMedio) payload.ticketMedio = ticketMedio;
-    onSubmit?.(payload);
+
+    try {
+      const result = await api.signup(payload);
+      if (result?.session?.access_token && result?.session?.refresh_token) {
+        await supabase.auth.setSession({
+          access_token: result.session.access_token,
+          refresh_token: result.session.refresh_token,
+        });
+      }
+      onSubmit?.(payload);
+      navigate('/app/reports/latest');
+    } catch (err) {
+      if (err?.status === 409) {
+        navigate(`/login?email=${encodeURIComponent(normalizedEmail)}`);
+        return;
+      }
+      if (err?.status === 422) {
+        const detail = err.body?.detail;
+        if (Array.isArray(detail)) {
+          const next = {};
+          detail.forEach((item) => {
+            const key = Array.isArray(item.loc) ? item.loc[1] : null;
+            if (key && !next[key]) next[key] = item.msg || 'Valor inválido';
+          });
+          setFieldErrors(next);
+        } else {
+          setError('Falha ao criar conta. Tente novamente.');
+        }
+        return;
+      }
+      setError('Falha ao criar conta. Tente novamente.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const inputStyle = (hasError) => ({
@@ -320,6 +364,7 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = false }) {
                   />
                 </div>
                 {touched.name && step1Errors.name && <div style={errorStyle}>{step1Errors.name}</div>}
+                {fieldErrors.name && <div style={errorStyle}>{fieldErrors.name}</div>}
               </div>
 
               {/* Email */}
@@ -340,6 +385,7 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = false }) {
                   />
                 </div>
                 {touched.email && step1Errors.email && <div style={errorStyle}>{step1Errors.email}</div>}
+                {fieldErrors.email && <div style={errorStyle}>{fieldErrors.email}</div>}
               </div>
 
               {/* Telefone */}
@@ -361,6 +407,7 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = false }) {
                   />
                 </div>
                 {touched.phone && step1Errors.phone && <div style={errorStyle}>{step1Errors.phone}</div>}
+                {fieldErrors.phone && <div style={errorStyle}>{fieldErrors.phone}</div>}
               </div>
 
               {/* Ticket Médio */}
@@ -382,6 +429,7 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = false }) {
                     />
                   </div>
                   {touched.ticketMedio && step1Errors.ticketMedio && <div style={errorStyle}>{step1Errors.ticketMedio}</div>}
+                  {fieldErrors.ticket_medio && <div style={errorStyle}>{fieldErrors.ticket_medio}</div>}
                 </div>
               )}
 
@@ -431,6 +479,22 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = false }) {
               Escolha uma senha para acessar seus relatórios e configurações a qualquer momento.
             </p>
 
+            {error && (
+              <div
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  background: 'rgba(229,96,77,0.10)',
+                  border: '1px solid rgba(229,96,77,0.35)',
+                  color: '#E5604D',
+                  fontSize: 13,
+                  marginBottom: 14,
+                }}
+              >
+                {error}
+              </div>
+            )}
+
             <form onSubmit={handleSubmit} noValidate>
               {/* Senha */}
               <div style={{ marginBottom: 14 }}>
@@ -469,6 +533,7 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = false }) {
                   </button>
                 </div>
                 {touched.password && step2Errors.password && <div style={errorStyle}>{step2Errors.password}</div>}
+                {fieldErrors.password && <div style={errorStyle}>{fieldErrors.password}</div>}
               </div>
 
               {/* Confirmar Senha */}

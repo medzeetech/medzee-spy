@@ -4,6 +4,7 @@ import AgentScreen from './screens/AgentScreen.jsx';
 import QRScreen from './screens/QRScreen.jsx';
 import GeneratingScreen from './screens/GeneratingScreen.jsx';
 import LeadFormScreen from './screens/LeadFormScreen.jsx';
+import LoginScreen from './screens/LoginScreen.jsx';
 import ReportScreen from './screens/ReportScreen.jsx';
 import SpyFlow from './screens/SpyFlow.jsx';
 import DashboardLayout from './screens/dashboard/DashboardLayout.jsx';
@@ -14,6 +15,7 @@ import WhatsAppPage from './screens/dashboard/WhatsAppPage.jsx';
 
 function MainFlow() {
   const [phase, setPhase] = useState('agent');
+  const [whatsappSessionId, setWhatsappSessionId] = useState(null);
   const navigate = useNavigate();
 
   const goQR = () => setPhase('qr');
@@ -23,9 +25,9 @@ function MainFlow() {
   const reset = () => setPhase('agent');
 
   if (phase === 'agent') return <AgentScreen onShowQR={goQR} />;
-  if (phase === 'qr') return <QRScreen onSimulate={goGenerating} />;
+  if (phase === 'qr') return <QRScreen onSimulate={goGenerating} onSessionCreated={setWhatsappSessionId} />;
   if (phase === 'generating') return <GeneratingScreen onComplete={goLead} />;
-  if (phase === 'lead') return <LeadFormScreen onSubmit={goReport} />;
+  if (phase === 'lead') return <LeadFormScreen onSubmit={goReport} whatsappSessionId={whatsappSessionId} />;
   return <ReportScreen onReset={reset} />;
 }
 
@@ -34,6 +36,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<MainFlow />} />
+        <Route path="/login" element={<LoginScreen />} />
         <Route path="/spy" element={<SpyFlow />} />
         <Route path="/app" element={<DashboardLayout />}>
           <Route index element={<Navigate to="dashboard" replace />} />
