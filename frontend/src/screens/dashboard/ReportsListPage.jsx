@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { FileText, Clock, Zap, CalendarClock, Settings2, Check } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import { listReports } from '../../lib/reports.js';
+import { useWhatsappStatus } from '../../lib/whatsapp.js';
 import GenerateReportModal from './GenerateReportModal.jsx';
 
 const FREQUENCY_OPTIONS = [
@@ -83,6 +84,11 @@ export default function ReportsListPage() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+
+  // Estado real da conexão WhatsApp pra empty state inteligente.
+  const { status: waStatus, loading: waLoading } = useWhatsappStatus();
+  const isConnected = Boolean(waStatus?.connected);
+  const messageCount = waStatus?.message_count ?? 0;
 
   useEffect(() => {
     let alive = true;
@@ -311,13 +317,39 @@ export default function ReportsListPage() {
           }}
         >
           <FileText size={24} style={{ color: COLORS.inkMute, marginBottom: 10 }} />
-          <div>
-            Você ainda não tem relatórios. Conecte seu WhatsApp em{' '}
-            <Link to="/spy" style={{ color: COLORS.orange, fontWeight: 600 }}>
-              /spy
-            </Link>{' '}
-            para gerar o primeiro.
-          </div>
+          {/* Empty state inteligente: muda conforme o estado real da
+              conexão WhatsApp. */}
+          {waLoading ? (
+            <div>Você ainda não tem relatórios.</div>
+          ) : isConnected ? (
+            messageCount >= 10 ? (
+              <div>
+                Você ainda não tem relatórios. Clique em{' '}
+                <span style={{ color: COLORS.orange, fontWeight: 600 }}>
+                  Gerar relatório
+                </span>{' '}
+                acima pra criar o primeiro com base nas{' '}
+                {messageCount.toLocaleString('pt-BR')} mensagens já coletadas.
+              </div>
+            ) : (
+              <div>
+                WhatsApp conectado! Aguarde algumas conversas chegarem
+                (mínimo: 10 mensagens) e depois clique em{' '}
+                <span style={{ color: COLORS.orange, fontWeight: 600 }}>
+                  Gerar relatório
+                </span>
+                . Coletadas até agora: {messageCount.toLocaleString('pt-BR')}.
+              </div>
+            )
+          ) : (
+            <div>
+              Você ainda não tem relatórios. Conecte seu WhatsApp em{' '}
+              <Link to="/app/whatsapp" style={{ color: COLORS.orange, fontWeight: 600 }}>
+                Conexão WhatsApp
+              </Link>{' '}
+              para começar a coletar conversas.
+            </div>
+          )}
         </div>
       )}
 

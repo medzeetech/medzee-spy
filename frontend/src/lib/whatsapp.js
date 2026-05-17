@@ -63,3 +63,55 @@ export async function disconnectWhatsapp(sessionId) {
     auth: true,
   });
 }
+
+// useUazapiStats(): polls GET /api/whatsapp/uazapi-stats a cada 5s. Retorna
+// { loading, stats, error } onde stats = { chat_count, message_count, raw }.
+//
+// Diferente de useWhatsappStatus (que reflete captured_messages local), este
+// hook bate direto em chat/find no provider — então mostra "verdade ao vivo"
+// do WhatsApp. Quando 'enabled' é false (ex: usuário desconectado) o hook
+// fica idle pra não bater no provider à toa.
+export function useUazapiStats({ enabled = true } = {}) {
+  const [state, setState] = useState({
+    loading: enabled,
+    stats: null,
+    error: null,
+  });
+  const aliveRef = useRef(true);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    if (!enabled) {
+      setState({ loading: false, stats: null, error: null });
+      return () => {
+        aliveRef.current = false;
+      };
+    }
+    let timer;
+
+    const tick = async () => {
+      try {
+        const stats = await callApi('/api/whatsapp/uazapi-stats', { auth: true });
+        if (!aliveRef.current) return;
+        setState({ loading: false, stats, error: null });
+      } catch (e) {
+        if (!aliveRef.current) return;
+        setState((prev) => ({
+          ...prev,
+          loading: false,
+          error: e.detail || `http_${e.status ?? 'unknown'}`,
+        }));
+      }
+      if (aliveRef.current) timer = setTimeout(tick, POLL_MS);
+    };
+
+    tick();
+
+    return () => {
+      aliveRef.current = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [enabled]);
+
+  return state;
+}

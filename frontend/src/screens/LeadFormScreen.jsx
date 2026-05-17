@@ -129,10 +129,11 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = false, what
         });
       }
       onSubmit?.(payload);
-      // F4 pivot: relatório é on-demand agora (user clica "Gerar relatório"
-      // na lista). Vai pra /app/whatsapp pra ver "Conectado · aguardando
-      // primeiras mensagens" e acompanhar coleta em tempo real.
-      navigate('/app/whatsapp');
+      // F1 reativado: extract worker dispara pós-conexão e já existe um
+      // placeholder de reports criado em consume_extracted. Mandar pra
+      // /app/reports/latest pra usuário ver "Análise IA em curso" e o
+      // relatório auto aparecer assim que o worker finalizar.
+      navigate('/app/reports/latest');
     } catch (err) {
       if (err?.status === 409) {
         navigate(`/login?email=${encodeURIComponent(normalizedEmail)}`);

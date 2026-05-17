@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -377,6 +377,99 @@ async def whatsapp_status(
             last_message_at=stats["last_message_at"],
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Endpoint 6 — GET /uazapi-stats (UI proxy de /chat/find)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/uazapi-stats",
+    summary="Totais ao vivo via uazapi /chat/find (chat_count + message_count)",
+    tags=["whatsapp"],
+)
+async def whatsapp_uazapi_stats(
+    user_id: UUID = Depends(get_current_user_id),
+) -> dict:
+    """Retorna as contagens em tempo real direto da uazapi.
+
+    Diferente de :func:`whatsapp_status` (que lê o snapshot local de
+    ``captured_messages``), este endpoint proxia ``POST /chat/find`` no
+    provider e expõe o bloco ``totalChatsStats``. Usado pela página de
+    Conexão pra polar a cada N segundos e refletir o que o WhatsApp tem
+    HOJE — sem depender do webhook ``messages`` chegar.
+
+    Responses:
+
+    * 404 ``no_active_session``     — usuário sem sessão WhatsApp.
+    * 409 ``not_connected``         — sessão existe mas não está conectada.
+    * 502 ``uazapi_unavailable``    — provider retornou erro (5xx, timeout).
+    * 200 ``{ chat_count, message_count, raw }`` — sucesso.
+
+    O front nunca deve confiar cegamente em ``chat_count``/``message_count``:
+    a estrutura do ``totalChatsStats`` varia por tier uazapi, então também
+    devolvemos o ``raw`` pra debug/exibição secundária.
+    """
+    logger.info(
+        "route.whatsapp_uazapi_stats.enter",
+        extra={"op": "whatsapp_uazapi_stats", "user_id": str(user_id)},
+    )
+
+    from app.clients.whatsapp import get_provider
+    from app.modules.whatsapp import repository as whatsapp_repo
+
+    session = await whatsapp_repo.get_active_for_user(user_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="no_active_session")
+    if session.get("status") != "connected":
+        raise HTTPException(status_code=409, detail="not_connected")
+
+    token = session.get("uazapi_token")
+    if not token:
+        raise HTTPException(status_code=409, detail="missing_token")
+
+    provider = get_provider()
+    try:
+        payload = await provider.get_chat_totals(token)
+    except (UazapiUnavailable, UazapiTimeout):
+        raise HTTPException(status_code=502, detail="uazapi_unavailable")
+    except UazapiError:
+        raise HTTPException(status_code=502, detail="uazapi_unavailable")
+
+    stats = payload.get("totalChatsStats") if isinstance(payload, dict) else None
+    stats = stats if isinstance(stats, dict) else {}
+
+    chat_count = _extract_total(stats.get("total_chats"))
+    message_count = _extract_total(stats.get("total_messages"))
+
+    return {
+        "chat_count": chat_count,
+        "message_count": message_count,
+        "raw": stats,
+    }
+
+
+def _extract_total(node: Any) -> int:
+    """Aceita várias formas de ``totalChatsStats.*``: ``int`` direto,
+    ``{"total": N, ...}`` ou aninhado uma vez. Retorna 0 quando não bate."""
+    if isinstance(node, int):
+        return node
+    if isinstance(node, dict):
+        total = node.get("total")
+        if isinstance(total, int):
+            return total
+        if isinstance(total, (str, float)):
+            try:
+                return int(total)
+            except (TypeError, ValueError):
+                return 0
+    if isinstance(node, (str, float)):
+        try:
+            return int(node)
+        except (TypeError, ValueError):
+            return 0
+    return 0
 
 
 __all__ = ["router"]

@@ -54,6 +54,10 @@ class WhatsAppProvider(Protocol):
         """Returns ``(messages, has_more, next_offset)``."""
         ...
 
+    async def get_chat_totals(self, session_token: str) -> dict:
+        """Returns the raw uazapi /chat/find payload (for totalChatsStats)."""
+        ...
+
     async def disconnect(self, session_token: str) -> None:
         ...
 

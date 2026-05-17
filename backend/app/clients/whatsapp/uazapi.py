@@ -137,6 +137,11 @@ class UazapiProvider:
         return ProviderSession(session_token=instance_token, qr_base64=qr)
 
     async def register_webhook(self, session_token: str, callback_url: str) -> None:
+        # uazapi paid: testes empíricos mostraram que ``events: ['connection',
+        # 'messages']`` não estava entregando o evento de mensagens (só o
+        # connection chegava). Ampliamos pra cobrir todos os nomes conhecidos
+        # de evento de mensagem no ecossistema Baileys/uazapi. Mantemos
+        # ``excludeMessages: false`` defensivo (alguns tiers default = exclude).
         await self._request(
             "POST",
             "/webhook",
@@ -144,10 +149,42 @@ class UazapiProvider:
             token=session_token,
             json_body={
                 "url": callback_url,
-                "events": ["connection", "messages"],
+                "events": [
+                    "connection",
+                    "messages",
+                    "messages.upsert",
+                    "messages.update",
+                    "message",
+                    "message.upsert",
+                    "message.received",
+                    "messages.received",
+                    "presence.update",
+                    "chats.upsert",
+                    "chats.update",
+                ],
                 "enabled": True,
+                # Defensivo — alguns tiers default excluem mensagens.
+                "excludeMessages": False,
+                "addUrlEvents": True,
+                "addUrlTypesMessages": True,
             },
         )
+        # Diagnóstico: lê de volta o webhook configurado pra confirmar o que
+        # a uazapi efetivamente aceitou (alguns campos podem ter sido
+        # ignorados silenciosamente).
+        try:
+            verification = await self._request(
+                "GET",
+                "/webhook",
+                op="register_webhook.verify",
+                token=session_token,
+            )
+            logger.info(
+                "uazapi webhook config verified: %r",
+                verification,
+            )
+        except Exception:
+            logger.warning("uazapi webhook GET verification failed (ignored)")
 
     async def refresh_qr(self, session_token: str) -> str:
         payload = await self._request(
@@ -222,6 +259,34 @@ class UazapiProvider:
         next_offset_raw = _maybe_int(payload.get("next_offset")) if isinstance(payload, dict) else None
         next_offset = next_offset_raw if next_offset_raw is not None else offset + len(messages)
         return messages, has_more, next_offset
+
+    async def get_chat_totals(self, session_token: str) -> dict[str, Any]:
+        """Call ``POST /chat/find`` with limit=1 and return the full payload.
+
+        Used by ``GET /api/whatsapp/uazapi-stats`` para a página de Conexão
+        exibir contagens em tempo real (chats + mensagens) direto do provider,
+        em vez do snapshot de ``captured_messages`` (que depende do webhook
+        ``messages`` chegar — não confiável em todos os tiers).
+
+        Não passa por ``_retry_5xx`` propositalmente: este é um endpoint de
+        UI que pola a cada poucos segundos. Um 500 transitório vira erro no
+        front e o próximo poll já tenta de novo. Backoff exponencial aqui
+        atrapalharia a responsividade da página.
+
+        Retorna o payload bruto pra route layer extrair ``totalChatsStats``.
+        """
+        return await self._request(
+            "POST",
+            "/chat/find",
+            op="get_chat_totals",
+            token=session_token,
+            json_body={
+                "operator": "AND",
+                "sort": "-wa_lastMsgTimestamp",
+                "limit": 1,
+                "offset": 0,
+            },
+        )
 
     async def disconnect(self, session_token: str) -> None:
         await self._request(

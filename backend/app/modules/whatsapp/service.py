@@ -405,18 +405,17 @@ class WhatsAppService:
             await self._store.publish(
                 session_id, SSEEvent(name="connected", data={"phone": phone})
             )
-            # F4 pivot (2026-05-17): extract_30d_pipeline está deprecated
-            # (vide STATE.md D4/B3/D8 + workers/extract.py docstring). NÃO
-            # disparamos mais o F1 pull-history aqui — F4 captura as
-            # mensagens forward via webhook event='messages', e o relatório
-            # é on-demand via POST /api/reports/generate. Re-habilitar o
-            # callsite abaixo só se um dia migrarmos pra provider com
-            # /chat/find funcional.
-            #
-            # asyncio.create_task(
-            #     self._run_extract(session_id),
-            #     name=f"extract-{session_id}",
-            # )
+            # F1 reativado (2026-05-17, pós-teste curl em uazapi paid):
+            # /chat/find + /message/find confirmados 200 OK no tier pago, então
+            # o pull-history de 30d volta a ser disparado em paralelo ao
+            # forward-capture de F4. As duas estratégias coexistem: F1 popula
+            # o ExtractedPayload em memória pra gerar relatório auto pós-signup;
+            # F4 (webhook 'messages') segue capturando mensagens novas pra
+            # relatórios on-demand depois.
+            asyncio.create_task(
+                self._run_extract(session_id),
+                name=f"extract-{session_id}",
+            )
             logger.info(
                 "service.webhook.connected",
                 extra={
@@ -752,21 +751,30 @@ class WhatsAppService:
                 },
             )
 
-        # 1b. F4 pivot: NÃO criamos mais placeholder de reports aqui.
-        # No fluxo F3 (deprecated) o signup criava um row 'generating' pra
-        # frontend já mostrar "Análise IA em curso". Mas em F4 o relatório
-        # é on-demand (user clica botão "Gerar relatório"), não auto. Criar
-        # placeholder aqui causa o "stuck em 95%" porque polling vê
-        # 'generating' eterno sem nunca um worker rodar.
-        #
-        # Em vez disso: APENAS linkar user_id em rows preexistentes (caso
-        # raro de re-signup após desconectar). Não-rows = no-op silencioso.
+        # 1b. F1 reativado: criar placeholder de reports pra frontend já
+        # polar /api/reports/latest e ver status='generating' enquanto o
+        # extract worker corre. Se o worker já criou row antes (race raríssimo
+        # — extract < signup), só linka user_id. clinic_segment fica 'outro'
+        # provisoriamente; o worker NÃO sobrescreve no path de reuse, então
+        # tá ok manter o default (LLM ainda recebe segment correto via
+        # _resolve_clinic_segment no _inner).
         try:
             from app.modules.reports import repository as reports_repo
-            await reports_repo.link_user(session_id, user_id)
+            from app.workers.report import _resolve_clinic_segment
+
+            existing = await reports_repo.get_existing_for_session(session_id)
+            if existing is None:
+                clinic_segment = await _resolve_clinic_segment(user_id)
+                await reports_repo.create_generating(
+                    whatsapp_session_id=session_id,
+                    user_id=user_id,
+                    clinic_segment=clinic_segment,
+                )
+            else:
+                await reports_repo.link_user(session_id, user_id)
         except Exception:
             logger.warning(
-                "service.consume_extracted.report_link_failed",
+                "service.consume_extracted.report_placeholder_failed",
                 extra={
                     "op": "consume_extracted",
                     "session_id": str(session_id),

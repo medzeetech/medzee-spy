@@ -18,7 +18,7 @@ import {
   Power,
 } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
-import { useWhatsappStatus, disconnectWhatsapp } from '../../lib/whatsapp.js';
+import { useWhatsappStatus, useUazapiStats, disconnectWhatsapp } from '../../lib/whatsapp.js';
 
 function formatRelative(isoDate) {
   if (!isoDate) return '—';
@@ -354,29 +354,26 @@ function StaleWarning() {
   );
 }
 
-function ConnectedNoMessages({ status, onDisconnect, disconnecting }) {
-  return (
-    <div
-      style={{
-        background: COLORS.paper,
-        border: '1px solid rgba(37,211,102,0.3)',
-        borderRadius: 16,
-        padding: 24,
-      }}
-    >
-      <ConnectedHeader
-        title="WhatsApp conectado · aguardando primeiras mensagens"
-        subtitle={`Conectado ${formatRelative(status.connected_since)}. Cada nova mensagem aparece aqui em tempo real.`}
-      />
-      <StatsGrid conversationCount={0} messageCount={0} />
-      <DisconnectButton onClick={onDisconnect} disabled={disconnecting} />
-    </div>
-  );
-}
+function ConnectedCard({ status, uazapiStats, onDisconnect, disconnecting }) {
+  // Fontes ao vivo via /chat/find (provider) — mais confiável que o snapshot
+  // local de captured_messages. Default 0 enquanto o primeiro poll não chega.
+  const chatCount = uazapiStats?.stats?.chat_count ?? 0;
+  const messageCount = uazapiStats?.stats?.message_count ?? 0;
+  const hasMessages = messageCount > 0;
+  const stale = hasMessages && isStale(status.last_message_at);
 
-function ConnectedWithData({ status, onDisconnect, disconnecting }) {
-  const stale = isStale(status.last_message_at);
-  const subtitle = `Conectado ${formatRelative(status.connected_since)} · última mensagem ${formatRelative(status.last_message_at)}`;
+  const title = hasMessages
+    ? 'WhatsApp conectado'
+    : 'WhatsApp conectado · aguardando primeiras mensagens';
+
+  const subtitleParts = [`Conectado ${formatRelative(status.connected_since)}`];
+  if (hasMessages) {
+    subtitleParts.push(`última mensagem ${formatRelative(status.last_message_at)}`);
+  } else {
+    subtitleParts.push('Cada nova mensagem aparece aqui em tempo real.');
+  }
+  const subtitle = subtitleParts.join(' · ');
+
   return (
     <div
       style={{
@@ -386,12 +383,21 @@ function ConnectedWithData({ status, onDisconnect, disconnecting }) {
         padding: 24,
       }}
     >
-      <ConnectedHeader title="WhatsApp conectado" subtitle={subtitle} />
-      <StatsGrid
-        conversationCount={status.conversation_count}
-        messageCount={status.message_count}
-      />
+      <ConnectedHeader title={title} subtitle={subtitle} />
+      <StatsGrid conversationCount={chatCount} messageCount={messageCount} />
       {stale && <StaleWarning />}
+      {uazapiStats?.error && !uazapiStats?.stats && (
+        <div
+          style={{
+            fontSize: 12,
+            color: COLORS.inkMute,
+            marginBottom: 12,
+            paddingLeft: 4,
+          }}
+        >
+          Atualizando contagens…
+        </div>
+      )}
       <DisconnectButton onClick={onDisconnect} disabled={disconnecting} />
     </div>
   );
@@ -399,6 +405,8 @@ function ConnectedWithData({ status, onDisconnect, disconnecting }) {
 
 export default function WhatsAppPage() {
   const { loading, status, error } = useWhatsappStatus();
+  const isConnected = !!status?.connected;
+  const uazapiStats = useUazapiStats({ enabled: isConnected });
   const [disconnecting, setDisconnecting] = useState(false);
 
   const handleDisconnect = async () => {
@@ -424,18 +432,11 @@ export default function WhatsAppPage() {
     content = <ErrorCard />;
   } else if (!status || !status.connected) {
     content = <DisconnectedCard />;
-  } else if (status.message_count === 0) {
-    content = (
-      <ConnectedNoMessages
-        status={status}
-        onDisconnect={handleDisconnect}
-        disconnecting={disconnecting}
-      />
-    );
   } else {
     content = (
-      <ConnectedWithData
+      <ConnectedCard
         status={status}
+        uazapiStats={uazapiStats}
         onDisconnect={handleDisconnect}
         disconnecting={disconnecting}
       />

@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import { listReports, getReport } from '../../lib/reports.js';
+import { useWhatsappStatus } from '../../lib/whatsapp.js';
 
 const PT_MONTH_LABEL = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
@@ -92,7 +93,47 @@ function MetricCard({ label, value, unit, trend, positive, Icon, color }) {
   );
 }
 
-function EmptyState() {
+function EmptyState({ isConnected, messageCount }) {
+  // Texto inteligente baseado no estado da conexão (não força "/spy" /
+  // signup pra user já autenticado).
+  let title;
+  let body;
+  let cta = null;
+
+  if (isConnected) {
+    if (messageCount >= 10) {
+      title = 'WhatsApp conectado — pronto pra primeiro relatório';
+      body = (
+        <>
+          Você já tem {messageCount.toLocaleString('pt-BR')} mensagens coletadas.
+          Vá em Relatórios e clique <strong>Gerar relatório</strong> pra criar
+          o primeiro diagnóstico.
+        </>
+      );
+      cta = { label: 'Ir para Relatórios', to: '/app/reports' };
+    } else {
+      title = 'WhatsApp conectado — aguardando mensagens';
+      body = (
+        <>
+          Coletadas até agora: <strong>{messageCount.toLocaleString('pt-BR')}</strong>.
+          A análise precisa de no mínimo 10 mensagens. Continue usando o
+          WhatsApp da clínica normalmente — cada nova mensagem aparece aqui em
+          tempo real.
+        </>
+      );
+      cta = { label: 'Ver status da conexão', to: '/app/whatsapp' };
+    }
+  } else {
+    title = 'WhatsApp não conectado';
+    body = (
+      <>
+        Conecte o WhatsApp da clínica em "Conexão WhatsApp" pra começar a
+        coletar conversas. Depois, gere um relatório quando quiser.
+      </>
+    );
+    cta = { label: 'Ir para Conexão WhatsApp', to: '/app/whatsapp' };
+  }
+
   return (
     <div
       style={{
@@ -129,7 +170,7 @@ function EmptyState() {
           letterSpacing: '-0.02em',
         }}
       >
-        Você ainda não tem relatórios
+        {title}
       </h2>
       <p
         style={{
@@ -138,33 +179,34 @@ function EmptyState() {
           lineHeight: 1.55,
           margin: 0,
           marginBottom: 22,
-          maxWidth: 480,
+          maxWidth: 520,
           marginLeft: 'auto',
           marginRight: 'auto',
         }}
       >
-        Conecte o WhatsApp da clínica em "Conexão WhatsApp" pra começar a
-        coletar conversas. Depois, gere um relatório quando quiser.
+        {body}
       </p>
-      <Link
-        to="/app/whatsapp"
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '12px 22px',
-          borderRadius: 12,
-          background: `linear-gradient(135deg, ${COLORS.orange}, ${COLORS.orangeDeep})`,
-          color: COLORS.cream,
-          fontSize: 14,
-          fontWeight: 700,
-          textDecoration: 'none',
-          fontFamily: "'Red Hat Display', sans-serif",
-          boxShadow: '0 6px 20px -6px rgba(255,107,53,0.4)',
-        }}
-      >
-        Ir para Conexão WhatsApp
-      </Link>
+      {cta && (
+        <Link
+          to={cta.to}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '12px 22px',
+            borderRadius: 12,
+            background: `linear-gradient(135deg, ${COLORS.orange}, ${COLORS.orangeDeep})`,
+            color: COLORS.cream,
+            fontSize: 14,
+            fontWeight: 700,
+            textDecoration: 'none',
+            fontFamily: "'Red Hat Display', sans-serif",
+            boxShadow: '0 6px 20px -6px rgba(255,107,53,0.4)',
+          }}
+        >
+          {cta.label}
+        </Link>
+      )}
     </div>
   );
 }
@@ -193,6 +235,11 @@ function ChartCard({ title, subtitle, children, fullWidth }) {
 
 export default function DashboardPage() {
   const [state, setState] = useState({ loading: true, reports: [], latest: null, error: null });
+  // Reflete o estado real do WhatsApp na empty state (não força "/spy"
+  // quando user já tá conectado).
+  const { status: waStatus } = useWhatsappStatus();
+  const isConnected = Boolean(waStatus?.connected);
+  const messageCount = waStatus?.message_count ?? 0;
 
   useEffect(() => {
     let alive = true;
@@ -272,7 +319,7 @@ export default function DashboardPage() {
     return (
       <div style={{ maxWidth: 900 }}>
         {header}
-        <EmptyState />
+        <EmptyState isConnected={isConnected} messageCount={messageCount} />
       </div>
     );
   }
