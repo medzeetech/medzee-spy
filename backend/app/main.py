@@ -76,6 +76,45 @@ async def lifespan(app: FastAPI):
     ttl_task = asyncio.create_task(ttl_cleanup_loop(), name="ttl_cleanup")
     logger.info("captured_messages TTL cleanup loop started")
 
+    # Recovery: re-spawnar o poll fallback de connection pra cada sessão
+    # ainda em 'pending' no DB. Sem isso, qualquer redeploy do backend mata
+    # a poll task em memória — usuário escaneia QR depois e nada acontece
+    # (webhook quebrado + poll perdido = travado em 'pending' eterno).
+    try:
+        from app.modules.whatsapp import repository as whatsapp_repo
+        from app.modules.whatsapp.schemas import SessionStatus
+        from app.modules.whatsapp.service import get_service
+        from uuid import UUID
+
+        pending_rows = await whatsapp_repo.find_pending()
+        if pending_rows:
+            svc = get_service()
+            for row in pending_rows:
+                row_id = UUID(str(row["id"]))
+                token = row.get("uazapi_token")
+                if not token:
+                    continue
+                user_id_raw = row.get("user_id")
+                row_user_id = UUID(str(user_id_raw)) if user_id_raw else None
+                # Restaura a sessão no store em-memória pra o poll achar
+                # state.status == PENDING e operar normalmente.
+                await session_store.create(
+                    row_id,
+                    uazapi_token=token,
+                    qr_base64="",  # QR antigo já foi entregue; o store mantém o registro vivo só pra status tracking.
+                    user_id=row_user_id,
+                )
+                asyncio.create_task(
+                    svc._poll_connection_fallback(row_id, token),
+                    name=f"poll-connection-recovery-{row_id}",
+                )
+            logger.info(
+                "startup_recovery.poll_respawned count=%d",
+                len(pending_rows),
+            )
+    except Exception:
+        logger.exception("startup_recovery.failed (ignored)")
+
     try:
         yield
     finally:

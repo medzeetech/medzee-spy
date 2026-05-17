@@ -211,6 +211,25 @@ async def find_disconnected_before(cutoff: datetime) -> list[UUID]:
     return ids
 
 
+async def find_pending() -> list[dict]:
+    """Return all sessions still in ``status='pending'`` in the DB.
+
+    Used by the startup recovery path to re-spawn the connection-poll
+    fallback for sessions that were created before a backend restart.
+    Without recovery, those sessions would never transition from pending
+    (in-memory state and poll task are both lost on restart).
+    """
+    result = await asyncio.to_thread(
+        lambda: _table().select("*").eq("status", "pending").execute()
+    )
+    rows = getattr(result, "data", None) or []
+    logger.info(
+        "repo.find_pending",
+        extra={"count": len(rows)},
+    )
+    return rows
+
+
 async def get_active_for_user(user_id: UUID) -> dict | None:
     """Return the most recent session belonging to ``user_id``, or ``None``.
 

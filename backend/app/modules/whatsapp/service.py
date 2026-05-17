@@ -325,12 +325,44 @@ class WhatsAppService:
 
                 try:
                     payload = await self._provider.get_status(session_token)
-                except UazapiError:
-                    # Transient — próximo tick tenta de novo.
+                except UazapiError as exc:
+                    # Transient — próximo tick tenta de novo. Log de classe
+                    # de erro pra distinguir 401 (token rotacionado, fim de
+                    # jogo) de 5xx transitório (que vale tentar de novo).
+                    logger.info(
+                        "service.poll_connection.tick_error",
+                        extra={
+                            "op": "poll_connection",
+                            "session_id": str(session_id),
+                            "tick": ticks,
+                            "error_class": type(exc).__name__,
+                            "error_code": getattr(exc, "code", "unknown"),
+                        },
+                    )
                     await asyncio.sleep(poll_interval_s)
                     elapsed += poll_interval_s
                     ticks += 1
                     continue
+
+                # Diagnóstico: log do shape RAW pra confirmar como o uazapi paid
+                # entrega o status (a documentação varia). Quando confirmarmos
+                # o shape estável, podemos baixar pra DEBUG.
+                _instance_block = (
+                    payload.get("instance") if isinstance(payload, dict) and isinstance(payload.get("instance"), dict) else {}
+                )
+                logger.info(
+                    "service.poll_connection.tick",
+                    extra={
+                        "op": "poll_connection",
+                        "session_id": str(session_id),
+                        "tick": ticks,
+                        "elapsed_s": int(elapsed),
+                        "payload_keys": sorted(payload.keys()) if isinstance(payload, dict) else None,
+                        "top_status": payload.get("status") if isinstance(payload, dict) else None,
+                        "instance_status": _instance_block.get("status"),
+                        "loggedIn": (payload.get("data") or {}).get("loggedIn") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else None,
+                    },
+                )
 
                 if _payload_says_connected(payload):
                     logger.info(
