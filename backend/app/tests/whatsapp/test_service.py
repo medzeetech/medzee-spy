@@ -211,21 +211,23 @@ async def test_rate_limit_window_expires(
 # --------------------------------------------------------------------------- #
 
 
-async def test_handle_webhook_event_loggedin_publishes_connected_and_schedules_extract(
+async def test_handle_webhook_event_loggedin_publishes_connected_without_scheduling_extract(
     mock_provider: AsyncMock,
     mock_repo: MagicMock,
     fresh_store: SessionStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On loggedIn=True, the service must (a) move state to CONNECTED,
-    (b) publish the 'connected' event, (c) schedule ``_run_extract``."""
+    """F4 pivot: on loggedIn=True, the service must (a) move state to CONNECTED,
+    (b) publish the 'connected' event. It MUST NOT schedule ``_run_extract``
+    anymore — the F1 pull-history path is deprecated dead code; F4 captures
+    messages forward via webhook event='messages'."""
     svc = _svc(mock_provider, fresh_store)
 
     # Create a session in PENDING first so the webhook can target it.
     resp = await svc.create_session(client_ip="2.2.2.2")
     sid = resp.session_id
 
-    # Track _run_extract invocations without actually firing the worker.
+    # Spy on _run_extract — it must NOT be called.
     extract_calls: list[UUID] = []
 
     async def _fake_run_extract(s: UUID) -> None:
@@ -240,20 +242,19 @@ async def test_handle_webhook_event_loggedin_publishes_connected_and_schedules_e
     }
     await svc.handle_webhook_event(sid, payload)
 
-    # Let the scheduled task get picked up by the loop.
+    # Let any (hypothetical) scheduled task get picked up.
     await asyncio.sleep(0)
 
     state = await fresh_store.get(sid)
     assert state is not None
     assert state.status == SessionStatus.CONNECTED
-    # Phone is stored *unmasked* now (column/kwarg name kept for legacy schema).
-    # Input "5511987651234@s.whatsapp.net" → strip suffix → "5511987651234".
     assert state.phone_masked == "5511987651234"
     assert state.last_event is not None
     assert state.last_event.name == "connected"
     assert state.last_event.data["phone"] == "5511987651234"
 
-    assert extract_calls == [sid]
+    # F4: extract worker NOT triggered.
+    assert extract_calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -438,30 +439,17 @@ async def test_consume_extracted_calls_reports_link_user(
     fresh_store: SessionStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F3 §REPORT-12: after linking the whatsapp_sessions row to the user,
-    consume_extracted must also link the matching reports row.
-
-    The current flow first checks whether a reports row exists for this
-    session via ``get_existing_for_session``:
-        - row exists → call ``link_user`` to backfill user_id.
-        - row absent (race: signup before extract finished) → call
-          ``create_generating`` to insert a placeholder.
-
-    This case exercises the "row exists" branch.
-    """
+    """F4 pivot: consume_extracted apenas chama ``reports.link_user`` pra
+    backfill user_id em rows preexistentes (caso raro de re-signup). NÃO
+    cria mais placeholder ``generating`` (isso causava o stuck em 95%
+    porque o relatório virou on-demand via POST /reports/generate)."""
     from uuid import uuid4
 
-    reports_get_existing = AsyncMock(
-        name="reports.repository.get_existing_for_session",
-        return_value={"id": "00000000-0000-0000-0000-000000000077"},
-    )
     reports_link_user = AsyncMock(name="reports.repository.link_user")
+    # create_generating não deve ser chamado mais nesse fluxo.
     reports_create_generating = AsyncMock(
         name="reports.repository.create_generating",
         return_value="00000000-0000-0000-0000-000000000077",
-    )
-    monkeypatch.setattr(
-        "app.modules.reports.repository.get_existing_for_session", reports_get_existing
     )
     monkeypatch.setattr(
         "app.modules.reports.repository.link_user", reports_link_user
@@ -478,8 +466,8 @@ async def test_consume_extracted_calls_reports_link_user(
     user_id = uuid4()
     await svc.consume_extracted(sid, user_id=user_id)
 
-    reports_get_existing.assert_awaited_once_with(sid)
     reports_link_user.assert_awaited_once_with(sid, user_id)
+    # F4: nunca mais cria placeholder de relatório aqui.
     reports_create_generating.assert_not_awaited()
     # And the whatsapp-side link still happened too.
     mock_repo.link_user.assert_awaited_once()
@@ -502,12 +490,12 @@ async def test_consume_extracted_swallows_reports_link_failure(
     reports outage would break the user-facing signup flow."""
     from uuid import uuid4
 
-    reports_get_existing = AsyncMock(
-        name="reports.repository.get_existing_for_session",
+    reports_link_user = AsyncMock(
+        name="reports.repository.link_user",
         side_effect=RuntimeError("reports schema down"),
     )
     monkeypatch.setattr(
-        "app.modules.reports.repository.get_existing_for_session", reports_get_existing
+        "app.modules.reports.repository.link_user", reports_link_user
     )
 
     svc = _svc(mock_provider, fresh_store)
@@ -522,6 +510,6 @@ async def test_consume_extracted_swallows_reports_link_failure(
     # No exception propagated; result is the (possibly-None) payload — what
     # matters here is that the call returned and downstream steps ran.
     assert result is None or hasattr(result, "message_count")
-    reports_get_existing.assert_awaited_once()
+    reports_link_user.assert_awaited_once()
     mock_repo.mark_consumed.assert_awaited_once()
     mock_repo.link_user.assert_awaited_once()

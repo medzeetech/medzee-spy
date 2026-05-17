@@ -129,7 +129,10 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = false, what
         });
       }
       onSubmit?.(payload);
-      navigate('/app/reports/latest');
+      // F4 pivot: relatório é on-demand agora (user clica "Gerar relatório"
+      // na lista). Vai pra /app/whatsapp pra ver "Conectado · aguardando
+      // primeiras mensagens" e acompanhar coleta em tempo real.
+      navigate('/app/whatsapp');
     } catch (err) {
       if (err?.status === 409) {
         navigate(`/login?email=${encodeURIComponent(normalizedEmail)}`);

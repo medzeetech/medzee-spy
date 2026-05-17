@@ -382,14 +382,18 @@ class WhatsAppService:
             await self._store.publish(
                 session_id, SSEEvent(name="connected", data={"phone": phone})
             )
-            # Fire-and-forget the extract pipeline. We deliberately do not
-            # await it — the webhook handler must return < 5s (design § 7.3).
-            # The worker module is imported lazily inside `_run_extract` so
-            # this file remains importable even before T8 lands.
-            asyncio.create_task(
-                self._run_extract(session_id),
-                name=f"extract-{session_id}",
-            )
+            # F4 pivot (2026-05-17): extract_30d_pipeline está deprecated
+            # (vide STATE.md D4/B3/D8 + workers/extract.py docstring). NÃO
+            # disparamos mais o F1 pull-history aqui — F4 captura as
+            # mensagens forward via webhook event='messages', e o relatório
+            # é on-demand via POST /api/reports/generate. Re-habilitar o
+            # callsite abaixo só se um dia migrarmos pra provider com
+            # /chat/find funcional.
+            #
+            # asyncio.create_task(
+            #     self._run_extract(session_id),
+            #     name=f"extract-{session_id}",
+            # )
             logger.info(
                 "service.webhook.connected",
                 extra={
@@ -679,37 +683,21 @@ class WhatsAppService:
                 },
             )
 
-        # 1b. F3 §REPORT-12: ensure a reports row exists for this session so
-        # the frontend polling sees ``status='generating'`` instead of 404.
+        # 1b. F4 pivot: NÃO criamos mais placeholder de reports aqui.
+        # No fluxo F3 (deprecated) o signup criava um row 'generating' pra
+        # frontend já mostrar "Análise IA em curso". Mas em F4 o relatório
+        # é on-demand (user clica botão "Gerar relatório"), não auto. Criar
+        # placeholder aqui causa o "stuck em 95%" porque polling vê
+        # 'generating' eterno sem nunca um worker rodar.
         #
-        # Two paths converge here:
-        #   - Happy: extract already finished, worker already created the row.
-        #     We just link user_id (was NULL).
-        #   - Race: signup arrived before extract finished (very common on
-        #     uazapi free where extract can take 4-5 min due to history sync).
-        #     We insert a placeholder ``generating`` row; the worker later
-        #     reuses it via ``get_existing_for_session``.
-        #
-        # Lazy import avoids a circular dep on the reports module.
+        # Em vez disso: APENAS linkar user_id em rows preexistentes (caso
+        # raro de re-signup após desconectar). Não-rows = no-op silencioso.
         try:
             from app.modules.reports import repository as reports_repo
-            existing_report = await reports_repo.get_existing_for_session(session_id)
-            if existing_report is None:
-                # Worker hasn't created the row yet — create a placeholder so
-                # the dashboard polling immediately sees ``generating``. The
-                # worker will UPDATE this row when extract completes (via
-                # ``get_existing_for_session`` in the worker).
-                await reports_repo.create_generating(
-                    whatsapp_session_id=session_id,
-                    user_id=user_id,
-                    clinic_segment="outro",
-                )
-            else:
-                # Row already exists — just backfill user_id.
-                await reports_repo.link_user(session_id, user_id)
+            await reports_repo.link_user(session_id, user_id)
         except Exception:
             logger.warning(
-                "service.consume_extracted.report_ensure_failed",
+                "service.consume_extracted.report_link_failed",
                 extra={
                     "op": "consume_extracted",
                     "session_id": str(session_id),
