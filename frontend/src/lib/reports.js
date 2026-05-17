@@ -23,8 +23,12 @@ import { callApi } from './api';
 import { supabase } from './supabase';
 
 const POLL_MS = 2000;
-const MAX_TOTAL_MS = 4 * 60_000;      // 4 min: cap absoluto antes de desistir
-const MAX_404_MS = 20_000;            // 20s: ainda esperando worker criar a row
+// Backend pode levar até ~7 min no free tier do uazapi (history sync atrasado
+// + retry budget 220s + extract real). Damos 8 min de margem antes de desistir.
+const MAX_TOTAL_MS = 8 * 60_000;
+// 60s ainda é tolerância pro worker criar a row de reports. Em races típicas
+// (signup chega antes do extract terminar) o row pode levar +30s pra surgir.
+const MAX_404_MS = 60_000;
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'unauthorized']);
 
 export function useReportPolling(idOrLatest = 'latest') {

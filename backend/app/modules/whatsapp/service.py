@@ -541,19 +541,16 @@ class WhatsAppService:
             return None
 
         # Capture the entry status BEFORE step 2 transitions it to CONSUMED.
-        # If the session is already in FAILED / EXPIRED / CONSUMED, some other
-        # path (extract failure cleanup, TTL expire loop, cancel_session, or
-        # a previous consume_extracted call) already issued `DELETE /instance`
-        # on the provider. Reissuing it would just be a stale-token 401 in
-        # uazapi and pollute the logs with `service.release_slot.delete_failed`.
-        # EXTRACTED is the happy-path entry (payload cached, slot still ours)
-        # — we DO release in that case.
+        # Releasing the provider slot is ONLY safe when the extract worker
+        # has cleanly finished (entry_status == EXTRACTED). Any other state
+        # means either: extract still running (EXTRACTING/CONNECTED — killing
+        # the instance would crash the in-flight worker), already cleaned up
+        # by upstream (FAILED/EXPIRED), or rare re-entry (CONSUMED).
+        # Letting the uazapi instance live to its natural 1h TTL when we
+        # arrive mid-extract is far better than yanking it out — gives the
+        # worker a chance to complete even when the signup races ahead.
         entry_status = state.status
-        already_released = entry_status in {
-            SessionStatus.FAILED,
-            SessionStatus.EXPIRED,
-            SessionStatus.CONSUMED,
-        }
+        should_release_slot = entry_status == SessionStatus.EXTRACTED
 
         # 1. Link user (will be required for RLS on future reads).
         try:
@@ -603,21 +600,24 @@ class WhatsAppService:
                 },
             )
 
-        # 4. Free the WhatsApp number AND the provider slot (best effort) —
-        # but only if no upstream path already deleted the uazapi instance.
-        if already_released:
+        # 4. Free the WhatsApp number AND the provider slot — only when
+        # the extract worker has cleanly handed off (status was EXTRACTED).
+        # In every other state we let the uazapi 1h TTL run its course;
+        # killing the instance mid-extract is exactly what made the smoke
+        # fail at 23s instead of completing.
+        if should_release_slot:
+            await self._release_provider_slot(
+                state.uazapi_token, session_id=session_id, op="consume_extracted"
+            )
+        else:
             logger.info(
                 "service.consume_extracted.release_skipped",
                 extra={
                     "op": "consume_extracted",
                     "session_id": str(session_id),
                     "entry_status": entry_status.value,
-                    "reason": "provider instance already deleted upstream",
+                    "reason": "extract not done yet OR slot already freed upstream",
                 },
-            )
-        else:
-            await self._release_provider_slot(
-                state.uazapi_token, session_id=session_id, op="consume_extracted"
             )
 
         logger.info(

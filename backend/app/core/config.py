@@ -30,11 +30,14 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "claude-sonnet-4-6"
     ANTHROPIC_API_KEY: str = ""
 
-    # Extract pipeline tuning (F1).
+    # Extract pipeline tuning (F1 + F3 B3 fix).
+    # Hard timeout precisa acomodar o retry budget (~220s no /chat/find) +
+    # o fan-out de /message/find por chat — empiricamente até 7 min no
+    # free tier. Override por env em prod se necessário.
     EXTRACT_DAYS_WINDOW: int = 30
     EXTRACT_PARALLELISM: int = 5
     EXTRACT_SOFT_TIMEOUT_S: int = 90
-    EXTRACT_HARD_TIMEOUT_S: int = 120
+    EXTRACT_HARD_TIMEOUT_S: int = 420
 
     # In-memory session TTL (F1) — sessions older than this in non-terminal
     # status get auto-expired by the background loop in lifespan.

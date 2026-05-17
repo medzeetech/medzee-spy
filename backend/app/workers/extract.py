@@ -78,9 +78,10 @@ _PAGE_SIZE: int = 100
 
 # B3 fix (F3 §REPORT-14): uazapi free tier returns 500 on /chat/find
 # immediately after `connected` — the internal history sync hasn't
-# finished yet. Wait ~5s before the first call. Tests monkeypatch this
-# constant to 0 to stay fast.
-_POST_CONNECTED_DELAY_S: float = 5.0
+# finished yet. Empirically 5s wasn't enough; bumped to 15s so we hit a
+# higher probability of the first attempt succeeding (and reduce dependence
+# on the retry budget). Tests monkeypatch this constant to 0 to stay fast.
+_POST_CONNECTED_DELAY_S: float = 15.0
 
 
 async def extract_30d_pipeline(session_id: UUID) -> None:
