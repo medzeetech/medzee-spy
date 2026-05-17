@@ -1,9 +1,11 @@
 import { Sparkles } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
-import { FUNNEL } from '../../data/reportData.js';
+import { FUNNEL as MOCK_FUNNEL } from '../../data/reportData.js';
 import SectionHeader from './SectionHeader.jsx';
 
-export default function FunnelSection() {
+export default function FunnelSection({ funnel }) {
+  const data = funnel && funnel.length > 0 ? funnel : MOCK_FUNNEL;
+
   return (
     <section style={{ marginBottom: 56 }}>
       <SectionHeader
@@ -21,8 +23,8 @@ export default function FunnelSection() {
         }}
       >
         <div className="flex flex-col" style={{ gap: 14 }}>
-          {FUNNEL.map((row, i) => {
-            const prev = i > 0 ? FUNNEL[i - 1] : null;
+          {data.map((row, i) => {
+            const prev = i > 0 ? data[i - 1] : null;
             const drop = prev ? prev.pct - row.pct : 0;
             const dropCount = prev ? prev.count - row.count : 0;
 

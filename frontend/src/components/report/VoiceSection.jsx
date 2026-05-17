@@ -1,6 +1,10 @@
 import { PieChart, Pie, Cell } from 'recharts';
 import { COLORS } from '../../constants/colors.js';
-import { OBJECTIONS, FAQS, SENTIMENT } from '../../data/reportData.js';
+import {
+  OBJECTIONS as MOCK_OBJECTIONS,
+  FAQS as MOCK_FAQS,
+  SENTIMENT as MOCK_SENTIMENT,
+} from '../../data/reportData.js';
 import SectionHeader from './SectionHeader.jsx';
 
 function CardShell({ title, sub, children }) {
@@ -32,7 +36,15 @@ function CardShell({ title, sub, children }) {
   );
 }
 
-export default function VoiceSection() {
+export default function VoiceSection({ objections, faqs, sentiment }) {
+  const objectionsData =
+    objections && objections.length > 0 ? objections : MOCK_OBJECTIONS;
+  const faqsData = faqs && faqs.length > 0 ? faqs : MOCK_FAQS;
+  const sentimentData =
+    sentiment && sentiment.length > 0 ? sentiment : MOCK_SENTIMENT;
+  const positiveValue =
+    sentimentData.find((s) => s.name === 'Positivo')?.value ?? sentimentData[0]?.value ?? 0;
+
   return (
     <section style={{ marginBottom: 56 }}>
       <SectionHeader
@@ -48,7 +60,7 @@ export default function VoiceSection() {
         {/* Objeções */}
         <CardShell title="Top objeções identificadas" sub="Motivos que travaram conversões">
           <div className="flex flex-col" style={{ gap: 14 }}>
-            {OBJECTIONS.map((o) => (
+            {objectionsData.map((o) => (
               <div key={o.label} className="flex flex-col" style={{ gap: 5 }}>
                 <div className="flex items-center justify-between">
                   <span style={{ fontSize: 12.5, color: COLORS.ink, fontWeight: 500 }}>{o.label}</span>
@@ -81,7 +93,7 @@ export default function VoiceSection() {
         {/* FAQs */}
         <CardShell title="Perguntas mais frequentes" sub="Candidatas a FAQ automatizado">
           <div className="flex flex-col">
-            {FAQS.map((faq, i) => (
+            {faqsData.map((faq, i) => (
               <div
                 key={faq.q}
                 className="flex items-start"
@@ -141,7 +153,7 @@ export default function VoiceSection() {
           <div style={{ position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center', height: 160 }}>
             <PieChart width={180} height={160}>
               <Pie
-                data={SENTIMENT}
+                data={sentimentData}
                 dataKey="value"
                 cx="50%"
                 cy="50%"
@@ -150,7 +162,7 @@ export default function VoiceSection() {
                 paddingAngle={3}
                 strokeWidth={0}
               >
-                {SENTIMENT.map((entry) => (
+                {sentimentData.map((entry) => (
                   <Cell key={entry.name} fill={entry.color} />
                 ))}
               </Pie>
@@ -167,7 +179,7 @@ export default function VoiceSection() {
               }}
             >
               <div style={{ fontSize: 26, fontWeight: 700, color: COLORS.ink, letterSpacing: '-0.02em', lineHeight: 1 }}>
-                42%
+                {positiveValue}%
               </div>
               <div
                 style={{
@@ -185,7 +197,7 @@ export default function VoiceSection() {
           </div>
 
           <div className="flex flex-col" style={{ gap: 8, marginTop: 14 }}>
-            {SENTIMENT.map((s) => (
+            {sentimentData.map((s) => (
               <div key={s.name} className="flex items-center justify-between" style={{ fontSize: 12.5 }}>
                 <span className="flex items-center" style={{ gap: 8, color: COLORS.ink }}>
                   <span style={{ width: 8, height: 8, borderRadius: '50%', background: s.color }} />

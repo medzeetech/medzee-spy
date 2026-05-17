@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { COLORS } from '../../constants/colors.js';
-import { OPPORTUNITIES } from '../../data/reportData.js';
+import { OPPORTUNITIES as MOCK_OPPORTUNITIES } from '../../data/reportData.js';
 import SectionHeader from './SectionHeader.jsx';
 
 const HEADERS = ['ID', 'Contexto', 'Por que perdeu', 'Valor est.', 'Quando'];
@@ -48,7 +48,7 @@ function Row({ row }) {
       </div>
       <div style={{ fontSize: 13, color: COLORS.ink, fontWeight: 700 }}>
         <span className="md:hidden" style={{ color: COLORS.inkMute, marginRight: 6, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 500 }}>Valor</span>
-        {formatBRL(row.value)}
+        {formatBRL(row.value ?? row.value_brl)}
       </div>
       <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
         <span className="md:hidden" style={{ color: COLORS.inkMute, marginRight: 6, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.1em' }}>Quando</span>
@@ -58,7 +58,10 @@ function Row({ row }) {
   );
 }
 
-export default function OpportunitiesSection() {
+export default function OpportunitiesSection({ opportunities }) {
+  const data =
+    opportunities && opportunities.length > 0 ? opportunities : MOCK_OPPORTUNITIES;
+
   return (
     <section style={{ marginBottom: 56 }}>
       <SectionHeader
@@ -95,7 +98,7 @@ export default function OpportunitiesSection() {
           ))}
         </div>
 
-        {OPPORTUNITIES.map((r) => (
+        {data.map((r) => (
           <Row key={r.tag} row={r} />
         ))}
 

@@ -2,7 +2,7 @@ import { Activity, TrendingDown, AlertCircle, Clock, Target } from 'lucide-react
 import { COLORS } from '../../constants/colors.js';
 import bgCard from '../../assets/background-card.svg';
 
-const PILLS = [
+const DEFAULT_PILLS = [
   {
     icon: AlertCircle,
     iconColor: COLORS.orange,
@@ -26,7 +26,29 @@ const PILLS = [
   },
 ];
 
-export default function HeroCard() {
+function formatBRL(v) {
+  if (v == null) return null;
+  return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
+}
+
+export default function HeroCard({ score, messageCount, diagnosticSummary }) {
+  const headlineValue = formatBRL(score) ?? 'R$ 38.400';
+  const summary =
+    diagnosticSummary && diagnosticSummary.trim().length > 0
+      ? diagnosticSummary
+      : 'Nos últimos 28 dias, sua clínica deixou passar receita equivalente a 45 consultas particulares. Abaixo, onde isso aconteceu.';
+  const PILLS =
+    messageCount != null
+      ? [
+          {
+            ...DEFAULT_PILLS[0],
+            sub: `de ${messageCount.toLocaleString('pt-BR')} mensagens`,
+          },
+          DEFAULT_PILLS[1],
+          DEFAULT_PILLS[2],
+        ]
+      : DEFAULT_PILLS;
+
   return (
     <div
       style={{
@@ -81,7 +103,7 @@ export default function HeroCard() {
               lineHeight: 1,
             }}
           >
-            R$ 38.400
+            {headlineValue}
           </div>
           <div
             className="inline-flex items-center"
@@ -107,7 +129,7 @@ export default function HeroCard() {
             margin: '0 0 32px',
           }}
         >
-          Nos últimos 28 dias, sua clínica deixou passar receita equivalente a 45 consultas particulares. Abaixo, onde isso aconteceu.
+          {summary}
         </p>
 
         {/* Pills */}

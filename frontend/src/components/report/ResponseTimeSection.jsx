@@ -1,9 +1,9 @@
 import { Fragment } from 'react';
 import { COLORS } from '../../constants/colors.js';
 import {
-  HEATMAP_DAYS,
-  HEATMAP_PERIODS,
-  RESPONSE_DISTRIBUTION,
+  HEATMAP_DAYS as MOCK_HEATMAP_DAYS,
+  HEATMAP_PERIODS as MOCK_HEATMAP_PERIODS,
+  RESPONSE_DISTRIBUTION as MOCK_RESPONSE_DISTRIBUTION,
 } from '../../data/reportData.js';
 import SectionHeader from './SectionHeader.jsx';
 
@@ -20,8 +20,20 @@ function heatStyle(val) {
   return { bg: COLORS.wine, color: COLORS.cream, text: formatted };
 }
 
-export default function ResponseTimeSection() {
-  const maxCount = Math.max(...RESPONSE_DISTRIBUTION.map((d) => d.count));
+export default function ResponseTimeSection({
+  heatmapDays,
+  heatmapPeriods,
+  responseTimeDistribution,
+}) {
+  const days = heatmapDays && heatmapDays.length > 0 ? heatmapDays : MOCK_HEATMAP_DAYS;
+  const periods =
+    heatmapPeriods && heatmapPeriods.length > 0 ? heatmapPeriods : MOCK_HEATMAP_PERIODS;
+  const distribution =
+    responseTimeDistribution && responseTimeDistribution.length > 0
+      ? responseTimeDistribution
+      : MOCK_RESPONSE_DISTRIBUTION;
+
+  const maxCount = Math.max(...distribution.map((d) => d.count));
 
   return (
     <section style={{ marginBottom: 56 }}>
@@ -71,7 +83,7 @@ export default function ResponseTimeSection() {
               }}
             >
               <div />
-              {HEATMAP_DAYS.map((day) => (
+              {days.map((day) => (
                 <div
                   key={day}
                   style={{
@@ -88,7 +100,7 @@ export default function ResponseTimeSection() {
                 </div>
               ))}
 
-              {HEATMAP_PERIODS.map((p) => (
+              {periods.map((p) => (
                 <Fragment key={p.label}>
                   <div
                     style={{
@@ -168,7 +180,7 @@ export default function ResponseTimeSection() {
           </div>
 
           <div className="flex flex-col" style={{ gap: 12 }}>
-            {RESPONSE_DISTRIBUTION.map((row) => {
+            {distribution.map((row) => {
               const pct = (row.count / maxCount) * 100;
               return (
                 <div key={row.faixa} className="flex flex-col" style={{ gap: 4 }}>

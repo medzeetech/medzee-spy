@@ -2,13 +2,22 @@ import { COLORS } from '../../constants/colors.js';
 import { BENCHMARKS } from '../../data/reportData.js';
 import SectionHeader from './SectionHeader.jsx';
 
-export default function BenchmarkSection() {
+const SEGMENT_LABEL = {
+  saude: 'Saúde',
+  odonto: 'Odonto',
+  outro: 'sua área',
+};
+
+export default function BenchmarkSection({ benchmarks, clinicSegment }) {
+  const data = benchmarks && benchmarks.length > 0 ? benchmarks : BENCHMARKS;
+  const segmentLabel = SEGMENT_LABEL[clinicSegment] || SEGMENT_LABEL.outro;
+
   return (
     <section style={{ marginBottom: 56 }}>
       <SectionHeader
         kicker="05 — Benchmark"
         title="Você vs. clínicas similares"
-        sub="Comparação com 240+ clínicas de cardiologia conectadas à Medzee, mesmo porte (3–6 atendentes)."
+        sub={`Média de clínicas de ${segmentLabel} conectadas à Medzee*`}
       />
 
       <div
@@ -20,7 +29,7 @@ export default function BenchmarkSection() {
         }}
       >
         <div className="flex flex-col" style={{ gap: 26 }}>
-          {BENCHMARKS.map((b) => {
+          {data.map((b) => {
             const worse = b.better === 'lower' ? b.clinic > b.market : b.clinic < b.market;
             const maxVal = Math.max(b.clinic, b.market) * 1.15;
             const clinicPct = (b.clinic / maxVal) * 100;
@@ -95,6 +104,19 @@ export default function BenchmarkSection() {
               </div>
             );
           })}
+        </div>
+
+        <div
+          style={{
+            marginTop: 22,
+            paddingTop: 14,
+            borderTop: `1px solid ${COLORS.hairline}`,
+            fontSize: 11,
+            color: COLORS.inkMute,
+            lineHeight: 1.5,
+          }}
+        >
+          *estimativa baseada em pesquisas setoriais da rede Medzee; atualizado periodicamente conforme a base cresce.
         </div>
       </div>
     </section>
