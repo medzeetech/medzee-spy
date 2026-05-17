@@ -100,19 +100,31 @@ class SessionStore:
         session_id: UUID,
         uazapi_token: str,
         qr_base64: str,
+        user_id: UUID | None = None,
     ) -> SessionState:
-        """Register a new pending session under the lock and return it."""
+        """Register a new pending session under the lock and return it.
+
+        ``user_id`` is set at creation when the caller is authenticated
+        (F4: /app/connect for re-conexão). Anonymous /spy flow leaves it
+        ``None`` and the F2 signup links later.
+        """
         async with self._lock:
             state = SessionState(
                 session_id=session_id,
                 uazapi_token=uazapi_token,
                 qr_base64=qr_base64,
                 status=SessionStatus.PENDING,
+                user_id=user_id,
             )
             self._sessions[session_id] = state
         logger.info(
             "session created",
-            extra={"session_id": str(session_id), "op": "create", "status": state.status.value},
+            extra={
+                "session_id": str(session_id),
+                "op": "create",
+                "status": state.status.value,
+                "user_id": str(user_id) if user_id else None,
+            },
         )
         return state
 

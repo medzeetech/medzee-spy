@@ -12,6 +12,7 @@ import DashboardPage from './screens/dashboard/DashboardPage.jsx';
 import ReportsListPage from './screens/dashboard/ReportsListPage.jsx';
 import ReportDetailPage from './screens/dashboard/ReportDetailPage.jsx';
 import WhatsAppPage from './screens/dashboard/WhatsAppPage.jsx';
+import ConnectScreen from './screens/dashboard/ConnectScreen.jsx';
 
 function MainFlow() {
   const [phase, setPhase] = useState('agent');
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="reports" element={<ReportsListPage />} />
           <Route path="reports/:id" element={<ReportDetailPage />} />
           <Route path="whatsapp" element={<WhatsAppPage />} />
+          <Route path="connect" element={<ConnectScreen />} />
         </Route>
       </Routes>
     </BrowserRouter>

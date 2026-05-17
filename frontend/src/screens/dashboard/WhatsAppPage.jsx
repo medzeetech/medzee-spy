@@ -183,7 +183,7 @@ function DisconnectedCard() {
       </p>
       <button
         type="button"
-        onClick={() => navigate('/spy')}
+        onClick={() => navigate('/app/connect')}
         className="flex items-center justify-center transition-all"
         style={{
           gap: 8,

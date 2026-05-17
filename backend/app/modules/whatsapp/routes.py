@@ -44,7 +44,7 @@ from app.clients.whatsapp.errors import (
     UazapiUnavailable,
 )
 from app.contracts.responses import SuccessResponse
-from app.core.security import get_current_user_id
+from app.core.security import get_current_user_id, get_current_user_id_optional
 from app.modules.captured_messages.schemas import WhatsappStatusResponse
 from app.modules.whatsapp.schemas import (
     TERMINAL_STATUSES,
@@ -79,8 +79,18 @@ router = APIRouter()
 async def create_session(
     request: Request,
     service: WhatsAppService = Depends(get_service),
+    user_id: UUID | None = Depends(get_current_user_id_optional),
 ) -> SuccessResponse[CreateSessionResponse]:
     """Spin up a uazapi instance and return the QR payload.
+
+    Two entry modes:
+
+    * **Anonymous** (no Authorization header): used by ``/spy`` first-time
+      flow. ``user_id`` will be linked later when the user signs up.
+    * **Authenticated** (Bearer JWT present): used by ``/app/connect``
+      for users who already exist. The session is linked to ``user_id``
+      at creation time so the webhook ``messages`` event can attribute
+      msgs immediately (no race window).
 
     Translates service-layer errors to HTTP per design § 10:
 
@@ -97,11 +107,15 @@ async def create_session(
     client_ip = request.client.host if request.client else "unknown"
     logger.info(
         "route.create_session.enter",
-        extra={"op": "create_session", "client_ip": client_ip},
+        extra={
+            "op": "create_session",
+            "client_ip": client_ip,
+            "user_id": str(user_id) if user_id else None,
+        },
     )
 
     try:
-        result = await service.create_session(client_ip)
+        result = await service.create_session(client_ip, user_id=user_id)
     except RateLimitExceeded:
         # WPP-16: caller hit > 3 attempts in 5 minutes.
         raise HTTPException(status_code=429, detail="too_many_sessions")

@@ -126,7 +126,9 @@ class WhatsAppService:
     # 1. create_session                                                  #
     # ------------------------------------------------------------------ #
 
-    async def create_session(self, client_ip: str) -> CreateSessionResponse:
+    async def create_session(
+        self, client_ip: str, *, user_id: UUID | None = None
+    ) -> CreateSessionResponse:
         """Create a fresh WhatsApp session and return the QR payload.
 
         Flow (design § 7.1):
@@ -135,7 +137,10 @@ class WhatsAppService:
             3. Generate ``session_id = uuid4()``.
             4. Register the per-session webhook on uazapi.
             5. Persist the row in ``medzee.whatsapp_sessions`` (status=pending).
-            6. Register the in-memory state with the QR.
+               If ``user_id`` is provided (authenticated /app/connect flow),
+               the row is linked at insert time so subsequent webhook
+               ``messages`` events can attribute msgs without a race.
+            6. Register the in-memory state with the QR (and user_id).
             7. Return the public response.
 
         On any ``UazapiError`` after step 2 we make a *best effort* to mark
@@ -146,7 +151,11 @@ class WhatsAppService:
         started = time.monotonic()
         logger.info(
             "service.create_session.enter",
-            extra={"op": "create_session", "client_ip": client_ip},
+            extra={
+                "op": "create_session",
+                "client_ip": client_ip,
+                "user_id": str(user_id) if user_id else None,
+            },
         )
 
         await self._enforce_rate_limit(client_ip)
@@ -183,11 +192,13 @@ class WhatsAppService:
                 session_id,
                 uazapi_token=provider_session.session_token,
                 status="pending",
+                user_id=user_id,
             )
             await self._store.create(
                 session_id,
                 uazapi_token=provider_session.session_token,
                 qr_base64=provider_session.qr_base64,
+                user_id=user_id,
             )
         except UazapiError as exc:
             # Mark whatever made it into the DB as failed (best effort).

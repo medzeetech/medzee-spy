@@ -38,17 +38,33 @@ def _table() -> Any:
     return get_supabase_admin_client().schema("medzee_spy").table("whatsapp_sessions")
 
 
-async def create(id: UUID, uazapi_token: str, status: str = "pending") -> None:
-    """Insert a new session row in ``pending`` state (or the given status)."""
-    row = {
+async def create(
+    id: UUID,
+    uazapi_token: str,
+    status: str = "pending",
+    user_id: UUID | None = None,
+) -> None:
+    """Insert a new session row in ``pending`` state (or the given status).
+
+    ``user_id`` is set at creation when the caller is authenticated (F4:
+    /app/connect for reconnect). Anonymous /spy flow leaves it ``None`` and
+    :func:`link_user` fills it later when signup completes.
+    """
+    row: dict[str, Any] = {
         "id": str(id),
         "uazapi_token": uazapi_token,
         "status": status,
     }
+    if user_id is not None:
+        row["user_id"] = str(user_id)
     await asyncio.to_thread(lambda: _table().insert(row).execute())
     logger.info(
         "repo.create",
-        extra={"session_id": str(id), "status": status},
+        extra={
+            "session_id": str(id),
+            "status": status,
+            "user_id": str(user_id) if user_id else None,
+        },
     )
 
 
