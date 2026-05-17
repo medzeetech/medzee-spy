@@ -216,11 +216,30 @@ async def uazapi_webhook(
     event_hint = body.get("event") or body.get("EventType") or body.get("type") or "?"
     body_keys = list(body.keys()) if isinstance(body, dict) else []
 
+    # Log a sanitized snapshot of the body — connection events are metadata
+    # only (no message content), so we can safely log all values here. Pulls
+    # out tokens explicitly so they don't leak.
+    safe_body = {}
+    if isinstance(body, dict):
+        for k, v in body.items():
+            if k.lower() in {"token", "instance_token", "uazapi_token"}:
+                safe_body[k] = f"<{len(str(v))} chars>" if v else "<empty>"
+            elif isinstance(v, (str, int, float, bool, type(None))):
+                safe_body[k] = v
+            elif isinstance(v, dict):
+                safe_body[k] = {
+                    sk: (f"<{len(str(sv))} chars>" if sk.lower() in {"token", "instance_token"} else sv)
+                    for sk, sv in v.items()
+                }
+            else:
+                safe_body[k] = f"<{type(v).__name__}>"
+
     logger.info(
-        "route.webhook.enter session_id=%s event=%s keys=%s",
+        "route.webhook.enter session_id=%s event=%s keys=%s safe_body=%s",
         session_id,
         event_hint,
         body_keys,
+        safe_body,
     )
 
     try:
