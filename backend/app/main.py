@@ -20,9 +20,30 @@ async def lifespan(app: FastAPI):
             settings.API_BASE_URL,
         )
 
-    # Quote-trap diagnostic: Railway-style env entry may keep literal quotes
-    # in the value. Warn loudly so deploys don't fail silently with "uazapi
-    # unavailable" downstream.
+    # Always-on config dump: logs URL prefixes + token lengths so we can
+    # diagnose env-var formatting issues (literal quotes from Railway dashboard,
+    # accidental empties) without restarting blind. Token values are never
+    # logged — only length + first/last char as fingerprints.
+    def _fingerprint(value: str) -> str:
+        if not value:
+            return "<empty>"
+        first = value[0] if value else ""
+        last = value[-1] if value else ""
+        return f"len={len(value)} first={first!r} last={last!r}"
+
+    logger.info(
+        "config dump: API_BASE_URL=%r UAZAPI_BASE_URL=%r "
+        "UAZAPI_ADMIN_TOKEN=%s SUPABASE_URL=%r SUPABASE_KEY=%s "
+        "SUPABASE_SERVICE_ROLE_KEY=%s ANTHROPIC_API_KEY=%s",
+        settings.API_BASE_URL,
+        settings.UAZAPI_BASE_URL,
+        _fingerprint(settings.UAZAPI_ADMIN_TOKEN),
+        settings.SUPABASE_URL,
+        _fingerprint(settings.SUPABASE_KEY),
+        _fingerprint(settings.SUPABASE_SERVICE_ROLE_KEY),
+        _fingerprint(settings.ANTHROPIC_API_KEY),
+    )
+
     for name, value in (
         ("API_BASE_URL", settings.API_BASE_URL),
         ("UAZAPI_BASE_URL", settings.UAZAPI_BASE_URL),
@@ -30,15 +51,10 @@ async def lifespan(app: FastAPI):
     ):
         if value and (value.startswith('"') or value.endswith('"')):
             logger.error(
-                "config: %s contains literal quote chars (value starts/ends "
-                "with \"). Re-enter in Railway Raw Editor without surrounding "
-                "quotes. len=%d head=%r",
+                "config: %s contains literal quote chars — re-enter without "
+                "surrounding quotes in Railway Raw Editor.",
                 name,
-                len(value),
-                value[:30],
             )
-        elif not value:
-            logger.warning("config: %s is empty", name)
 
     session_store.start_expire_loop()
     logger.info("session_store TTL expire loop started")
