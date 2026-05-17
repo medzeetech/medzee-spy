@@ -434,15 +434,40 @@ def _parse_chat(raw: Any) -> Chat:
     )
 
 
+# Baileys/whatsmeow surface several text-bearing message types — the worker's
+# 30d filter assumes a normalized "text" string, so we collapse all of them here.
+_TEXT_TYPE_ALIASES = frozenset({
+    "text",
+    "chat",                    # Baileys plain-text
+    "conversation",            # whatsmeow plain-text
+    "extendedtextmessage",     # Baileys formatted / quoted / link-preview text
+    "extendedtext",
+})
+
+
+def _normalize_message_type(raw_type: str | None) -> str:
+    if not raw_type:
+        return "text"
+    lowered = raw_type.lower()
+    if lowered in _TEXT_TYPE_ALIASES:
+        return "text"
+    return lowered
+
+
 def _parse_message(raw: Any) -> Message:
     if not isinstance(raw, dict):
         return Message(ts=0, from_me=False, type="unknown", text="")
     ts = _first_ts(raw, ("ts", "t", "timestamp", "messageTimestamp")) or 0
     from_me_val = _first_bool(raw, ("from_me", "fromMe", "fromme"))
     from_me = bool(from_me_val) if from_me_val is not None else False
-    type_val = _first_str(raw, ("type", "messageType", "media_type")) or "text"
+    raw_type = _first_str(raw, ("type", "messageType", "media_type"))
     text_val = _first_str(raw, ("text", "body", "content", "message", "caption")) or ""
-    return Message(ts=ts, from_me=from_me, type=type_val, text=text_val)
+    return Message(
+        ts=ts,
+        from_me=from_me,
+        type=_normalize_message_type(raw_type),
+        text=text_val,
+    )
 
 
 def _first_str(raw: dict[str, Any], keys: tuple[str, ...]) -> str | None:
