@@ -8,6 +8,15 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.modules.whatsapp.state import session_store
 
+# Force INFO-level logs to surface in Railway. uvicorn doesn't touch the root
+# logger by default, so any third-party / app-side logger.info call gets
+# dropped (root threshold = WARNING). force=True overrides any prior config.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s [%(name)s] %(message)s",
+    force=True,
+)
+
 logger = logging.getLogger(__name__)
 
 
