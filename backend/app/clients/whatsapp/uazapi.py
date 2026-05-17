@@ -143,11 +143,12 @@ class UazapiProvider:
         # de evento de mensagem no ecossistema Baileys/uazapi. Mantemos
         # ``excludeMessages: false`` defensivo (alguns tiers default = exclude).
         #
-        # Retry com _retry_5xx — uazapi tem instabilidades transientes no
-        # /webhook logo após /instance/create (provavelmente latência de
-        # propagação interna). Sem retry, o serviço aborta toda a criação,
-        # joga fora a instância recém-criada (slot consumido) e o usuário fica
-        # com erro 503 vendo "uazapi_unavailable".
+        # Sem retry: register_webhook está no caminho síncrono de POST /sessions,
+        # então qualquer espera aqui trava o usuário no spinner "Gerando QR".
+        # _RETRY_DELAYS_S (10/30/60/120 = 220s) era impraticável; já testamos.
+        # Caller trata UazapiError como não-fatal — se falhar, o QR é entregue
+        # mesmo assim, só perde o webhook 'connection' (F1 auto-extract não
+        # dispara, mas F4 on-demand ainda funciona).
         body = {
             "url": callback_url,
             "events": [
@@ -168,17 +169,13 @@ class UazapiProvider:
             "addUrlEvents": True,
             "addUrlTypesMessages": True,
         }
-
-        async def _do() -> Any:
-            return await self._request(
-                "POST",
-                "/webhook",
-                op="register_webhook",
-                token=session_token,
-                json_body=body,
-            )
-
-        await _retry_5xx(_do, op="register_webhook")
+        await self._request(
+            "POST",
+            "/webhook",
+            op="register_webhook",
+            token=session_token,
+            json_body=body,
+        )
         # Diagnóstico: lê de volta o webhook configurado pra confirmar o que
         # a uazapi efetivamente aceitou (alguns campos podem ter sido
         # ignorados silenciosamente).
