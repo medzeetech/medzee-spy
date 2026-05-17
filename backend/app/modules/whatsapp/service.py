@@ -273,14 +273,23 @@ class WhatsAppService:
             await self._handle_connection_event(session_id, payload)
             return
 
-        if event_lower.startswith("messages") or event_lower == "message":
+        if (
+            event_lower.startswith("messages")
+            or event_lower == "message"
+            or "msg" in event_lower
+            or "chat" in event_lower
+        ):
             await self._handle_messages_event(session_id, payload)
             return
 
-        logger.debug(
-            "service.webhook.ignored event=%s session_id=%s",
+        # Diagnóstico: log TODO event desconhecido em INFO (era DEBUG, oculto em
+        # prod). Permite identificar event names que uazapi paid manda mas a
+        # gente ainda não roteia (ex: presence.update, chats.upsert, etc).
+        logger.info(
+            "service.webhook.unknown_event event=%r session_id=%s keys=%s",
             event,
             session_id,
+            list(payload.keys()) if isinstance(payload, dict) else "<not-dict>",
         )
 
     # ------------------------------------------------------------------ #
@@ -388,7 +397,10 @@ class WhatsAppService:
                 phone_masked=phone,
             )
             await repository.mark_status(
-                session_id, "connected", phone_masked=phone
+                session_id,
+                "connected",
+                phone_masked=phone,
+                connected_at=datetime.now(timezone.utc),
             )
             await self._store.publish(
                 session_id, SSEEvent(name="connected", data={"phone": phone})
@@ -473,6 +485,17 @@ class WhatsAppService:
         Failure mode: any exception is **logged and swallowed**. The webhook
         route must always return 2xx so uazapi doesn't retry-storm.
         """
+        # Diagnóstico: SEMPRE loga entrada do handler em INFO pra ver no
+        # Railway. Diagnosticar "0 msgs capturadas" exige saber se este
+        # path roda ou se o webhook nem dispara messages event.
+        logger.info(
+            "service.webhook.messages.enter",
+            extra={
+                "session_id": str(session_id),
+                "payload_keys": list(payload.keys()) if isinstance(payload, dict) else None,
+            },
+        )
+
         state = await self._store.get(session_id)
         if state is None:
             logger.warning(
@@ -493,14 +516,39 @@ class WhatsAppService:
             return
 
         # The messages array can live at the top level (variant A) or under
-        # ``data`` (variant B). Look in both.
+        # ``data`` (variant B). Look in both. Also try ``message`` singular
+        # (some uazapi tiers send 1 msg at a time as object, not list).
         raw_msgs = payload.get("messages")
         if raw_msgs is None:
             data_block = payload.get("data")
             if isinstance(data_block, dict):
-                raw_msgs = data_block.get("messages")
+                raw_msgs = data_block.get("messages") or data_block.get("message")
+        if raw_msgs is None and isinstance(payload.get("message"), dict):
+            raw_msgs = [payload["message"]]
+        # Variant: uazapi paid pode mandar a msg solta no body (sem chave
+        # 'messages'), com 'key' direto no topo.
+        if raw_msgs is None and isinstance(payload.get("key"), dict):
+            raw_msgs = [payload]
+        # Wrap a single dict into a list pra uniformizar.
+        if isinstance(raw_msgs, dict):
+            raw_msgs = [raw_msgs]
         if not isinstance(raw_msgs, list):
+            logger.info(
+                "service.webhook.messages.no_messages_array",
+                extra={
+                    "session_id": str(session_id),
+                    "payload_keys": list(payload.keys()),
+                },
+            )
             return
+
+        logger.info(
+            "service.webhook.messages.parsed_count",
+            extra={
+                "session_id": str(session_id),
+                "raw_count": len(raw_msgs),
+            },
+        )
 
         inserts: list[CapturedMessageInsert] = []
         for raw in raw_msgs:
@@ -511,6 +559,16 @@ class WhatsAppService:
                 inserts.append(parsed)
 
         if not inserts:
+            logger.warning(
+                "service.webhook.messages.zero_parsed",
+                extra={
+                    "session_id": str(session_id),
+                    "raw_count": len(raw_msgs),
+                    "first_raw_keys": (
+                        list(raw_msgs[0].keys()) if raw_msgs and isinstance(raw_msgs[0], dict) else None
+                    ),
+                },
+            )
             return
 
         try:

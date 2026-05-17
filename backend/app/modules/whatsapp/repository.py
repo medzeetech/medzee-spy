@@ -70,14 +70,22 @@ async def create(
 
 async def mark_status(id: UUID, status: str, **extra: Any) -> None:
     """Update ``status`` plus any of: ``phone_masked``, ``message_count``,
-    ``extracted_at`` (datetime → ISO 8601), ``failed_code``.
+    ``extracted_at`` (datetime → ISO 8601), ``failed_code``, ``connected_at``
+    (F4 — datetime → ISO 8601; set when transitioning to 'connected' so the
+    status card mostra "Conectado há X").
 
     ``updated_at`` is intentionally **not** set here — the DB trigger handles
     it on every UPDATE.
     """
     payload: dict[str, Any] = {"status": status}
 
-    allowed = {"phone_masked", "message_count", "extracted_at", "failed_code"}
+    allowed = {
+        "phone_masked",
+        "message_count",
+        "extracted_at",
+        "failed_code",
+        "connected_at",
+    }
     unknown = set(extra) - allowed
     if unknown:
         raise ValueError(f"unsupported mark_status fields: {sorted(unknown)}")
@@ -86,7 +94,7 @@ async def mark_status(id: UUID, status: str, **extra: Any) -> None:
         if key not in extra:
             continue
         value = extra[key]
-        if key == "extracted_at" and isinstance(value, datetime):
+        if key in {"extracted_at", "connected_at"} and isinstance(value, datetime):
             value = value.isoformat()
         payload[key] = value
 
