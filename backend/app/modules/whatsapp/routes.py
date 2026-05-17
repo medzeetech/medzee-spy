@@ -214,33 +214,36 @@ async def uazapi_webhook(
         body = {}
 
     event_hint = body.get("event") or body.get("EventType") or body.get("type") or "?"
-    body_keys = list(body.keys()) if isinstance(body, dict) else []
+    instance = body.get("instance") if isinstance(body.get("instance"), dict) else {}
+    status_hint = instance.get("status") or "?"
 
-    # Log a sanitized snapshot of the body — connection events are metadata
-    # only (no message content), so we can safely log all values here. Pulls
-    # out tokens explicitly so they don't leak.
-    safe_body = {}
-    if isinstance(body, dict):
-        for k, v in body.items():
-            if k.lower() in {"token", "instance_token", "uazapi_token"}:
-                safe_body[k] = f"<{len(str(v))} chars>" if v else "<empty>"
-            elif isinstance(v, (str, int, float, bool, type(None))):
-                safe_body[k] = v
-            elif isinstance(v, dict):
-                safe_body[k] = {
-                    sk: (f"<{len(str(sv))} chars>" if sk.lower() in {"token", "instance_token"} else sv)
-                    for sk, sv in v.items()
-                }
-            else:
-                safe_body[k] = f"<{type(v).__name__}>"
-
-    logger.info(
-        "route.webhook.enter session_id=%s event=%s keys=%s safe_body=%s",
-        session_id,
-        event_hint,
-        body_keys,
-        safe_body,
-    )
+    # QR refreshes (status=connecting) chegam a cada ~20s e o payload inclui
+    # o base64 do QR (3-5KB). Eles não trazem informação acionável: o
+    # ``handle_webhook_event`` só age em ``connected`` / ``disconnected``.
+    # Mantemos um DEBUG pra debug local mas não polui prod.
+    if event_hint == "connection" and status_hint == "connecting":
+        logger.debug(
+            "route.webhook.qr_refresh session_id=%s name=%s",
+            session_id,
+            instance.get("name"),
+        )
+    else:
+        # Summary curto pra eventos acionáveis (connected, disconnected,
+        # LoggedOut, etc). NUNCA loga o qrcode nem o token.
+        summary = {
+            "EventType": body.get("EventType") or body.get("event"),
+            "status": status_hint,
+            "name": instance.get("name"),
+            "type": body.get("type"),
+            "owner": body.get("owner") or "",
+            "lastDisconnectReason": instance.get("lastDisconnectReason"),
+        }
+        logger.info(
+            "route.webhook.enter session_id=%s event=%s summary=%s",
+            session_id,
+            event_hint,
+            {k: v for k, v in summary.items() if v not in (None, "")},
+        )
 
     try:
         await service.handle_webhook_event(session_id, body)

@@ -246,12 +246,21 @@ class WhatsAppService:
         )
         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
 
-        logger.info(
-            "service.webhook.enter session_id=%s event=%s keys=%s data_keys=%s",
+        # Status hint pra evitar logar repetidamente o QR refresh
+        # (a uazapi free manda um connection event com status=connecting a
+        # cada ~20s; nenhum age — só inunda os logs).
+        _instance = payload.get("instance") if isinstance(payload.get("instance"), dict) else {}
+        _status = str(_instance.get("status") or "").lower()
+        _log_level = (
+            logger.debug
+            if event.lower() == "connection" and _status == "connecting"
+            else logger.info
+        )
+        _log_level(
+            "service.webhook.enter session_id=%s event=%s status=%s",
             session_id,
             event,
-            list(payload.keys()) if isinstance(payload, dict) else "<not-dict>",
-            list(data.keys()) if isinstance(data, dict) else "<not-dict>",
+            _status or "?",
         )
 
         state = await self._store.get(session_id)

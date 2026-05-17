@@ -17,6 +17,11 @@ logging.basicConfig(
     force=True,
 )
 
+# Silenciar libs ruidosas que logam uma linha INFO em cada request HTTP.
+# Mantemos nossos próprios logs de rota/serviço que trazem mais contexto.
+for noisy in ("httpx", "httpcore", "hpack"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 
