@@ -1,4 +1,4 @@
-"""Persistence repository for ``medzee.whatsapp_sessions``.
+"""Persistence repository for ``medzee_spy.whatsapp_sessions``.
 
 All operations use the Supabase **service_role** admin client because sessions
 are created *before* signup (no JWT yet), so RLS must be bypassed. F2 will
@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 def _table() -> Any:
-    """Return a fresh table handle scoped to ``medzee.whatsapp_sessions``."""
-    return get_supabase_admin_client().schema("medzee").table("whatsapp_sessions")
+    """Return a fresh table handle scoped to ``medzee_spy.whatsapp_sessions``."""
+    return get_supabase_admin_client().schema("medzee_spy").table("whatsapp_sessions")
 
 
 async def create(id: UUID, uazapi_token: str, status: str = "pending") -> None:

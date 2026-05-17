@@ -39,7 +39,7 @@ def fake_supabase(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 def _last_verb_call(fake: MagicMock, verb: str):
-    """Return the most recent ``.schema('medzee').table(...).<verb>(...)``
+    """Return the most recent ``.schema('medzee_spy').table(...).<verb>(...)``
     call args on the fake supabase client.
     """
     table_handle = fake.schema.return_value.table.return_value
@@ -54,12 +54,12 @@ def _last_verb_call(fake: MagicMock, verb: str):
 
 
 async def test_create_inserts_correct_payload(fake_supabase: MagicMock) -> None:
-    """``create`` issues an INSERT against medzee.whatsapp_sessions with
+    """``create`` issues an INSERT against medzee_spy.whatsapp_sessions with
     id/uazapi_token/status. ``message_count`` defaults via DB column."""
     sid = uuid4()
     await repository.create(sid, uazapi_token="tok_abc", status="pending")
 
-    fake_supabase.schema.assert_called_with("medzee")
+    fake_supabase.schema.assert_called_with("medzee_spy")
     fake_supabase.schema.return_value.table.assert_called_with("whatsapp_sessions")
 
     call = _last_verb_call(fake_supabase, "insert")
