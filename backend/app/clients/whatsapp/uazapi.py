@@ -38,7 +38,7 @@ _PROVIDER_CODE_BANNED = 463
 # retry budget ≈ 220s. 4xx propagates immediately (not transient). Only
 # applied to the heavy data-pulling ops (list_chats / list_messages) —
 # create/connect/delete stay on a single attempt.
-_RETRY_DELAYS_S: tuple[float, ...] = (10.0, 30.0, 60.0, 120.0)
+_RETRY_DELAYS_S: tuple[float, ...] = (15.0, 30.0, 60.0, 120.0, 180.0, 180.0)
 
 
 async def _retry_5xx(

@@ -80,12 +80,13 @@ _PROGRESS_EVERY_N_CHATS: int = 5
 # Page size used against uazapi for both chat/find and message/find.
 _PAGE_SIZE: int = 100
 
-# B3 fix (F3 §REPORT-14): uazapi free tier returns 500 on /chat/find
-# immediately after `connected` — the internal history sync hasn't
-# finished yet. Empirically 5s wasn't enough; bumped to 15s so we hit a
-# higher probability of the first attempt succeeding (and reduce dependence
-# on the retry budget). Tests monkeypatch this constant to 0 to stay fast.
-_POST_CONNECTED_DELAY_S: float = 15.0
+# B3 fix (F3 §REPORT-14) — REVISITADO 2026-05-17 com logs do paid:
+# uazapi (free E paid) retorna 500 em /chat/find logo após `connected`
+# porque o history sync interno dela ainda não terminou. 15s não bastou
+# no paid (testes empíricos: 3 retries seguidos retornaram 500 mesmo
+# após ~1min). 60s dá margem pro sync completar antes do primeiro hit.
+# Tests monkeypatch pra 0 pra ficar rápido.
+_POST_CONNECTED_DELAY_S: float = 60.0
 
 
 async def extract_30d_pipeline(session_id: UUID) -> None:
@@ -293,7 +294,12 @@ async def _fan_out_extract(
                     if m.ts < cutoff_ts:
                         old_found = True
                         break
-                    if m.type == "text" and m.text:
+                    # Aceita qualquer mensagem com texto — não só type=="text".
+                    # Caption de imagem (type="image") com texto é signal comercial
+                    # legítimo (cliente perguntando preço sobre foto, etc). Áudio /
+                    # sticker / video sem caption ficam de fora porque m.text vem
+                    # vazio neles.
+                    if m.text:
                         msgs.append(
                             MessagePayload(
                                 ts=m.ts,
@@ -662,7 +668,12 @@ async def pull_history(
                     if m.ts < cutoff_ts:
                         old_found = True
                         break
-                    if m.type == "text" and m.text:
+                    # Aceita qualquer mensagem com texto — não só type=="text".
+                    # Caption de imagem (type="image") com texto é signal comercial
+                    # legítimo (cliente perguntando preço sobre foto, etc). Áudio /
+                    # sticker / video sem caption ficam de fora porque m.text vem
+                    # vazio neles.
+                    if m.text:
                         msgs.append(
                             MessagePayload(
                                 ts=m.ts,
