@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import settings
+from app.modules.whatsapp.state import session_store
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,14 @@ async def lifespan(app: FastAPI):
             "Run cloudflared/ngrok and set API_BASE_URL to the tunnel URL in .env.",
             settings.API_BASE_URL,
         )
-    yield
+
+    session_store.start_expire_loop()
+    logger.info("session_store TTL expire loop started")
+    try:
+        yield
+    finally:
+        await session_store.stop_expire_loop()
+        logger.info("session_store TTL expire loop stopped")
 
 
 app = FastAPI(

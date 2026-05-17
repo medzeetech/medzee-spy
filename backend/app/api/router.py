@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
+from app.modules.whatsapp.routes import router as whatsapp_router
+
 api_router = APIRouter()
 
-# Register module routers here:
-# from app.modules.example.routes import router as example_router
-# api_router.include_router(example_router, prefix="/example", tags=["example"])
+api_router.include_router(whatsapp_router, prefix="/whatsapp", tags=["whatsapp"])
