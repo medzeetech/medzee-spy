@@ -302,6 +302,7 @@ def _to_summary(row: dict) -> ReportSummary:
         status=ReportStatus(row["status"]),
         message_count=row.get("message_count"),
         score=row.get("score"),
+        period_days=row.get("period_days"),
         created_at=row["created_at"],
     )
 

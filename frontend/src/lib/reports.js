@@ -199,3 +199,20 @@ export async function listReports({ page = 1, pageSize = 20 } = {}) {
 export async function getReport(id) {
   return callApi(`/api/reports/${id}`, { auth: true });
 }
+
+/**
+ * Trigger an on-demand report over a user-chosen window.
+ * F4-11 endpoint. Returns { report_id, status: 'generating' } on success.
+ *
+ * Throws (via callApi) on:
+ *   - 422 detail='not_enough_data' → frontend shows "Aguarde algumas conversas chegarem"
+ *   - 429 detail='too_many_generations_retry_in_Xs' → frontend extrai X, mostra "Aguarde X segundos"
+ *   - other → mostra erro genérico
+ */
+export async function generateReport(periodDays) {
+  return callApi('/api/reports/generate', {
+    method: 'POST',
+    auth: true,
+    body: { period_days: periodDays },
+  });
+}

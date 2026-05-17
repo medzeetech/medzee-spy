@@ -155,6 +155,7 @@ class ReportSummary(BaseModel):
     status: ReportStatus
     message_count: int | None = None
     score: int | None = None
+    period_days: int | None = None
     created_at: datetime
 
 

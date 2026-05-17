@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { FileText, Clock, Zap, CalendarClock, Settings2, Check } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import { listReports } from '../../lib/reports.js';
+import GenerateReportModal from './GenerateReportModal.jsx';
 
 const FREQUENCY_OPTIONS = [
   { label: '7 dias', value: 7 },
@@ -81,6 +82,7 @@ export default function ReportsListPage() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -118,7 +120,7 @@ export default function ReportsListPage() {
         </div>
         <button
           type="button"
-          onClick={() => navigate('/spy')}
+          onClick={() => setModalOpen(true)}
           className="inline-flex items-center transition-all"
           style={{
             gap: 8,
@@ -376,6 +378,12 @@ export default function ReportsListPage() {
                           {report.message_count.toLocaleString('pt-BR')} mensagens
                         </span>
                       )}
+                      {typeof report.period_days === 'number' && (
+                        <span className="inline-flex items-center" style={{ gap: 4, fontSize: 12, color: COLORS.inkMute }}>
+                          <CalendarClock size={11} />
+                          Análise de {report.period_days} dias
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -406,6 +414,15 @@ export default function ReportsListPage() {
           })}
         </div>
       )}
+
+      <GenerateReportModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onSuccess={(reportId) => {
+          setModalOpen(false);
+          navigate(`/app/reports/${reportId}`);
+        }}
+      />
     </div>
   );
 }
