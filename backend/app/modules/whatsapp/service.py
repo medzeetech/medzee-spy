@@ -37,7 +37,6 @@ from app.clients.whatsapp import WhatsAppProvider, get_provider
 from app.clients.whatsapp.errors import UazapiError
 from app.core.config import settings
 from app.modules.whatsapp import repository
-from app.modules.whatsapp.mask import mask_phone
 from app.modules.whatsapp.schemas import (
     CreateSessionResponse,
     ExtractedPayload,
@@ -323,17 +322,22 @@ class WhatsAppService:
                 jid_candidate = (
                     data["user"].get("id") or data["user"].get("phone") or ""
                 )
-            phone_masked = mask_phone(str(jid_candidate))
+            # Store the unmasked number (per product decision 2026-05-17).
+            # Strip the WhatsApp suffix when present (e.g. "5511...@s.whatsapp.net"),
+            # uazapi free already delivers just digits in ``owner``. The column /
+            # kwarg name ``phone_masked`` is kept so we don't have to migrate the
+            # DB or the in-memory state schema — only the *value* changed.
+            phone = str(jid_candidate).split("@", 1)[0]
             await self._store.update(
                 session_id,
                 status=SessionStatus.CONNECTED,
-                phone_masked=phone_masked,
+                phone_masked=phone,
             )
             await repository.mark_status(
-                session_id, "connected", phone_masked=phone_masked
+                session_id, "connected", phone_masked=phone
             )
             await self._store.publish(
-                session_id, SSEEvent(name="connected", data={"phone": phone_masked})
+                session_id, SSEEvent(name="connected", data={"phone": phone})
             )
             # Fire-and-forget the extract pipeline. We deliberately do not
             # await it — the webhook handler must return < 5s (design § 7.3).

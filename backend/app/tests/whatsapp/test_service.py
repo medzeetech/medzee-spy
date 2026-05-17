@@ -241,10 +241,12 @@ async def test_handle_webhook_event_loggedin_publishes_connected_and_schedules_e
     state = await fresh_store.get(sid)
     assert state is not None
     assert state.status == SessionStatus.CONNECTED
-    assert state.phone_masked == "+55 11 9****-1234"
+    # Phone is stored *unmasked* now (column/kwarg name kept for legacy schema).
+    # Input "5511987651234@s.whatsapp.net" → strip suffix → "5511987651234".
+    assert state.phone_masked == "5511987651234"
     assert state.last_event is not None
     assert state.last_event.name == "connected"
-    assert state.last_event.data["phone"] == "+55 11 9****-1234"
+    assert state.last_event.data["phone"] == "5511987651234"
 
     assert extract_calls == [sid]
 
