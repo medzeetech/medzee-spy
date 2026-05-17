@@ -31,12 +31,14 @@ import asyncio
 import logging
 import os
 import time
-from typing import TYPE_CHECKING
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from app.clients.whatsapp import WhatsAppProvider, get_provider
 from app.clients.whatsapp.errors import UazapiError
 from app.core.config import settings
+from app.modules.captured_messages.schemas import CapturedMessageInsert
 from app.modules.whatsapp import repository
 from app.modules.whatsapp.schemas import (
     CreateSessionResponse,
@@ -225,9 +227,59 @@ class WhatsAppService:
     async def handle_webhook_event(
         self, session_id: UUID, payload: dict[str, Any]
     ) -> None:
-        """Process a uazapi webhook callback (design § 7.3).
+        """Route a uazapi webhook callback to the right handler (design § 7.3).
 
-        Only ``event="connection"`` is meaningful in M1:
+        Event routing:
+            * ``connection`` (and connection-shaped legacy payloads) →
+              :meth:`_handle_connection_event` (M1 lifecycle).
+            * ``messages`` / ``messages.upsert`` / ``message`` →
+              :meth:`_handle_messages_event` (F4 forward-capture).
+            * Anything else → silently ignored (debug log).
+
+        The route MUST NOT raise — uazapi retries aggressively on any
+        non-2xx response, which becomes a retry-storm if we let exceptions
+        bubble. Both handlers are expected to swallow their own errors.
+        """
+        event = (
+            payload.get("event")
+            or payload.get("EventType")
+            or payload.get("type")
+            or ""
+        )
+        event_lower = str(event).lower()
+
+        # Connection-shaped payloads sometimes lack a clean event name
+        # (older uazapi tiers stuff ``loggedIn`` directly in the body), so
+        # we keep a "smells like connection" fallback to preserve M1 behavior.
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        smells_like_connection = (
+            "connection" in event_lower
+            or "connected" in event_lower
+            or (isinstance(data, dict) and ("loggedIn" in data or "logged_in" in data))
+        )
+
+        if smells_like_connection:
+            await self._handle_connection_event(session_id, payload)
+            return
+
+        if event_lower.startswith("messages") or event_lower == "message":
+            await self._handle_messages_event(session_id, payload)
+            return
+
+        logger.debug(
+            "service.webhook.ignored event=%s session_id=%s",
+            event,
+            session_id,
+        )
+
+    # ------------------------------------------------------------------ #
+    # 2a. _handle_connection_event                                       #
+    # ------------------------------------------------------------------ #
+
+    async def _handle_connection_event(
+        self, session_id: UUID, payload: dict[str, Any]
+    ) -> None:
+        """Process a connection-shaped uazapi webhook.
 
         * ``loggedIn=True`` → mark the session connected, publish ``connected``
           via SSE, and **fire-and-forget** the extract task (T8).
@@ -238,9 +290,6 @@ class WhatsAppService:
         Unknown sessions are a silent no-op — uazapi may deliver to a
         session that's already been expired locally; we do not want to leak
         a 404 nor let the webhook retry hammer us.
-
-        Any other event (e.g. ``messages``) is ignored — M1 pulls history
-        via REST in the extract pipeline.
         """
         started = time.monotonic()
 
@@ -278,30 +327,6 @@ class WhatsAppService:
                 "service.webhook.unknown_session session_id=%s elapsed_ms=%d",
                 session_id,
                 int((time.monotonic() - started) * 1000),
-            )
-            return
-
-        # uazapi (confirmed via captured payloads) sends connection webhooks
-        # with this shape:
-        #     {
-        #       "EventType": "connection",
-        #       "instance": {"name": "...", "status": "connected"|"disconnected"},
-        #       "instanceName": "...",
-        #       "owner": "5511XXXXXXXX",      # set when status=connected
-        #       "token": "...",
-        #       "type": "LoggedOut"           # present on logout
-        #     }
-        is_connection_event = (
-            "connection" in event.lower()
-            or "connected" in event.lower()
-            or "loggedIn" in data
-            or "logged_in" in data
-        )
-
-        if not is_connection_event:
-            logger.info(
-                "service.webhook.ignored_event session_id=%s event=%s",
-                session_id, event,
             )
             return
 
@@ -415,6 +440,86 @@ class WhatsAppService:
                 "status": state.status.value,
             },
         )
+
+    # ------------------------------------------------------------------ #
+    # 2b. _handle_messages_event — F4 forward-capture                    #
+    # ------------------------------------------------------------------ #
+
+    async def _handle_messages_event(
+        self, session_id: UUID, payload: dict[str, Any]
+    ) -> None:
+        """Parse + persist each incoming/outgoing WhatsApp message (F4 T5).
+
+        uazapi forwards both inbound and outbound messages as a ``messages``
+        event (or ``messages.upsert``). We parse each entry, normalize it
+        into :class:`CapturedMessageInsert`, and batch-insert via the
+        captured_messages repository.
+
+        Failure mode: any exception is **logged and swallowed**. The webhook
+        route must always return 2xx so uazapi doesn't retry-storm.
+        """
+        state = await self._store.get(session_id)
+        if state is None:
+            logger.warning(
+                "captured.messages.unknown_session",
+                extra={"session_id": str(session_id)},
+            )
+            return
+
+        if state.user_id is None:
+            # Race: webhook arrived before signup linked a user_id. We don't
+            # have anywhere safe to attribute these rows (FK to auth.users
+            # is mandatory), so drop them. uazapi will keep forwarding new
+            # ones as the user keeps using WhatsApp.
+            logger.warning(
+                "captured.messages.no_user_linked",
+                extra={"session_id": str(session_id)},
+            )
+            return
+
+        # The messages array can live at the top level (variant A) or under
+        # ``data`` (variant B). Look in both.
+        raw_msgs = payload.get("messages")
+        if raw_msgs is None:
+            data_block = payload.get("data")
+            if isinstance(data_block, dict):
+                raw_msgs = data_block.get("messages")
+        if not isinstance(raw_msgs, list):
+            return
+
+        inserts: list[CapturedMessageInsert] = []
+        for raw in raw_msgs:
+            parsed = _parse_uazapi_message(
+                raw, session_id=session_id, user_id=state.user_id
+            )
+            if parsed is not None:
+                inserts.append(parsed)
+
+        if not inserts:
+            return
+
+        try:
+            from app.modules.captured_messages import repository as captured_repo  # noqa: WPS433
+            inserted = await captured_repo.insert_many(inserts)
+            logger.info(
+                "service.webhook.messages",
+                extra={
+                    "session_id": str(session_id),
+                    "user_id": str(state.user_id),
+                    "count_received": len(raw_msgs),
+                    "count_inserted": inserted,
+                },
+            )
+        except Exception:
+            # Swallow — webhook MUST stay 200 OK so uazapi doesn't retry-storm.
+            logger.exception(
+                "captured.messages.insert_failed",
+                extra={
+                    "session_id": str(session_id),
+                    "user_id": str(state.user_id),
+                    "count_received": len(raw_msgs),
+                },
+            )
 
     # ------------------------------------------------------------------ #
     # 3. _run_extract — fire-and-forget worker wrapper                   #
@@ -763,6 +868,99 @@ def get_service() -> WhatsAppService:
             callback_base_url=settings.API_BASE_URL,
         )
     return _service_singleton
+
+
+# ---------------------------------------------------------------------------
+# uazapi message parser (F4 T5)
+# ---------------------------------------------------------------------------
+
+
+def _parse_uazapi_message(
+    raw: Any,
+    *,
+    session_id: UUID,
+    user_id: UUID,
+) -> CapturedMessageInsert | None:
+    """Normalize a single uazapi message dict into a :class:`CapturedMessageInsert`.
+
+    Tolerates three known shapes (and falls back to ``message_type='other'``
+    with ``text=None`` for anything we don't yet model):
+
+    1. **Plain text** — ``message.conversation``
+    2. **Extended text** (replies, mentions, formatting) — ``message.extendedTextMessage.text``
+    3. **Image with caption** — ``message.imageMessage.caption``
+
+    Returns ``None`` on any shape we can't safely attribute (missing chatid,
+    missing/invalid timestamp, non-dict input). The caller treats ``None``
+    as "skip this row, keep going".
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    key = raw.get("key") or {}
+    if not isinstance(key, dict):
+        key = {}
+
+    wa_chatid = key.get("remoteJid") or raw.get("remoteJid")
+    if not wa_chatid:
+        return None
+
+    raw_message_id = key.get("id") or raw.get("id")
+    is_from_me = bool(key.get("fromMe") or raw.get("fromMe"))
+
+    ts_unix = raw.get("messageTimestamp") or raw.get("timestamp")
+    if ts_unix is None:
+        return None
+    try:
+        ts = datetime.fromtimestamp(int(ts_unix), tz=timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+    msg = raw.get("message")
+    text: str | None = None
+    message_type: str = "other"
+    if isinstance(msg, dict):
+        if "conversation" in msg and isinstance(msg["conversation"], str):
+            text = msg["conversation"]
+            message_type = "text"
+        elif "extendedTextMessage" in msg:
+            ext = msg["extendedTextMessage"]
+            if isinstance(ext, dict):
+                inner_text = ext.get("text")
+                if isinstance(inner_text, str):
+                    text = inner_text
+                message_type = "text"
+        elif "imageMessage" in msg:
+            img = msg["imageMessage"]
+            if isinstance(img, dict):
+                caption = img.get("caption")
+                if isinstance(caption, str):
+                    text = caption
+            message_type = "image"
+        elif "audioMessage" in msg:
+            message_type = "audio"
+        elif "videoMessage" in msg:
+            message_type = "video"
+        elif "stickerMessage" in msg:
+            message_type = "sticker"
+        elif "documentMessage" in msg:
+            message_type = "document"
+
+    contact_name = raw.get("pushName") or raw.get("notify")
+    if contact_name is not None and not isinstance(contact_name, str):
+        contact_name = None
+
+    return CapturedMessageInsert(
+        user_id=user_id,
+        whatsapp_session_id=session_id,
+        wa_chatid=str(wa_chatid),
+        contact_name=contact_name,
+        ts=ts,
+        is_from_me=is_from_me,
+        message_type=message_type,  # type: ignore[arg-type]  # narrowed to MessageType by schema
+        text=text,
+        raw_message_id=str(raw_message_id) if raw_message_id is not None else None,
+    )
 
 
 __all__ = [

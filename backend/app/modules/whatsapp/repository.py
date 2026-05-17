@@ -153,3 +153,62 @@ async def get(id: UUID) -> dict | None:
     if not found:
         return None
     return rows[0]
+
+
+async def find_disconnected_before(cutoff: datetime) -> list[UUID]:
+    """Return IDs of sessions in ``status='disconnected'`` whose
+    ``updated_at`` is strictly older than ``cutoff``.
+
+    Used by the F4 TTL cleanup loop (``app.workers.ttl_cleanup``) to find
+    sessions whose captured_messages should be purged.
+
+    NOTE on status filter: today ``'disconnected'`` is the typical terminal
+    value after a user clicks Disconnect or uazapi reports ``LoggedOut``.
+    Other terminals (``expired``, ``failed``, ``consumed``) are
+    **intentionally excluded** — they have different lifecycles and the
+    user pivoted F4 to only count ``'disconnected'`` as the TTL trigger.
+
+    Returns ``[]`` when nothing has expired yet.
+    """
+    cutoff_iso = cutoff.isoformat()
+    result = await asyncio.to_thread(
+        lambda: _table()
+        .select("id")
+        .eq("status", "disconnected")
+        .lt("updated_at", cutoff_iso)
+        .execute()
+    )
+    rows = getattr(result, "data", None) or []
+    ids = [UUID(row["id"]) for row in rows]
+    logger.info(
+        "repo.find_disconnected_before",
+        extra={"cutoff": cutoff_iso, "count": len(ids)},
+    )
+    return ids
+
+
+async def get_active_for_user(user_id: UUID) -> dict | None:
+    """Return the most recent session belonging to ``user_id``, or ``None``.
+
+    Ordered by ``created_at`` desc — the most recently created session wins,
+    even if older rows exist for the same user (those would have been
+    disconnected/expired and are no longer "active"). The caller inspects
+    ``status`` to decide whether the session is currently *connected*.
+    """
+    result = await asyncio.to_thread(
+        lambda: _table()
+        .select("*")
+        .eq("user_id", str(user_id))
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(result, "data", None) or []
+    found = bool(rows)
+    logger.info(
+        "repo.get_active_for_user",
+        extra={"user_id": str(user_id), "found": found},
+    )
+    if not found:
+        return None
+    return rows[0]

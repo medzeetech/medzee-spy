@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -7,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import settings
 from app.modules.whatsapp.state import session_store
+from app.workers.ttl_cleanup import ttl_cleanup_loop
 
 # Force INFO-level logs to surface in Railway. uvicorn doesn't touch the root
 # logger by default, so any third-party / app-side logger.info call gets
@@ -68,9 +70,21 @@ async def lifespan(app: FastAPI):
 
     session_store.start_expire_loop()
     logger.info("session_store TTL expire loop started")
+
+    # F4-T7: captured_messages TTL cleanup worker (sibling to the in-memory
+    # session expire loop above). Runs once every 24h; cancelled on shutdown.
+    ttl_task = asyncio.create_task(ttl_cleanup_loop(), name="ttl_cleanup")
+    logger.info("captured_messages TTL cleanup loop started")
+
     try:
         yield
     finally:
+        ttl_task.cancel()
+        try:
+            await ttl_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        logger.info("captured_messages TTL cleanup loop stopped")
         await session_store.stop_expire_loop()
         logger.info("session_store TTL expire loop stopped")
 

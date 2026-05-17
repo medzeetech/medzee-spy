@@ -44,6 +44,8 @@ from app.clients.whatsapp.errors import (
     UazapiUnavailable,
 )
 from app.contracts.responses import SuccessResponse
+from app.core.security import get_current_user_id
+from app.modules.captured_messages.schemas import WhatsappStatusResponse
 from app.modules.whatsapp.schemas import (
     TERMINAL_STATUSES,
     CreateSessionResponse,
@@ -305,6 +307,62 @@ async def cancel_session(
         raise HTTPException(status_code=404, detail="session_not_found")
 
     return {"status": "cancelled"}
+
+
+# ---------------------------------------------------------------------------
+# Endpoint 5 — GET /status (F4-T6, F4-14)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/status",
+    response_model=SuccessResponse[WhatsappStatusResponse],
+    summary="Estado atual da conexão WhatsApp do usuário autenticado",
+    tags=["whatsapp"],
+)
+async def whatsapp_status(
+    user_id: UUID = Depends(get_current_user_id),
+) -> SuccessResponse[WhatsappStatusResponse]:
+    """Retorna se o usuário tem uma sessão WhatsApp ativa + stats das msgs.
+
+    Política (F4 design § Forward-Capture):
+
+    * Nenhuma session ainda → ``{connected: false}`` (defaults zeram o resto).
+    * Session existe e ``status == 'connected'`` → ``{connected: true, ...}``
+      com session_id, connected_since e os counts de mensagens já capturadas.
+    * Session existe mas ``status != 'connected'`` → ``{connected: false,
+      session_id, connected_since (último valor conhecido), ...stats}`` — o
+      front pode exibir "desconectado, tem X msgs do último período conectado".
+
+    O import de ``captured_messages.repository`` é lazy porque o módulo está
+    sendo construído em paralelo (T4) e podemos rodar a app mesmo se o stats
+    helper ainda não tiver carregado em algum cenário de import circular.
+    """
+    logger.info(
+        "route.whatsapp_status.enter",
+        extra={"op": "whatsapp_status", "user_id": str(user_id)},
+    )
+
+    from app.modules.whatsapp import repository as whatsapp_repo
+    from app.modules.captured_messages import repository as captured_repo
+
+    session = await whatsapp_repo.get_active_for_user(user_id)
+    if session is None:
+        return SuccessResponse(data=WhatsappStatusResponse(connected=False))
+
+    session_id = UUID(str(session["id"]))
+    stats = await captured_repo.stats_for_session(session_id)
+
+    return SuccessResponse(
+        data=WhatsappStatusResponse(
+            connected=session.get("status") == "connected",
+            session_id=session_id,
+            connected_since=session.get("connected_at"),
+            message_count=stats["message_count"],
+            conversation_count=stats["conversation_count"],
+            last_message_at=stats["last_message_at"],
+        )
+    )
 
 
 __all__ = ["router"]
