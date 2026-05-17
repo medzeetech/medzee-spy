@@ -561,27 +561,15 @@ class WhatsAppService:
         session_id: UUID,
         op: str,
     ) -> None:
-        """Disconnect WhatsApp + delete the provider instance (best effort).
+        """Free the provider's device slot (disconnect + delete in one call).
 
-        WPP-11 demands disconnect on session finalization. We also delete the
-        instance entry (``POST /instance/reset`` on uazapi) so the tenant's
-        device-slot is freed for the next visitor. Both calls are independent:
-        if disconnect fails, we still try delete — the slot recovery is what
-        matters at scale.
+        WPP-11 demands disconnect on session finalization. uazapi's
+        ``DELETE /instance`` does both atomically and removes the database
+        row, freeing the tenant's device-slot for the next visitor. We don't
+        need a separate disconnect call. Best-effort: if delete fails we log
+        and continue — the session is already in a terminal state and the
+        free-tier auto-deletes after 1h anyway.
         """
-        try:
-            await self._provider.disconnect(session_token)
-        except UazapiError as exc:
-            logger.warning(
-                "service.release_slot.disconnect_failed",
-                extra={
-                    "op": op,
-                    "session_id": str(session_id),
-                    "error_class": type(exc).__name__,
-                    "error_code": getattr(exc, "code", "unknown"),
-                },
-            )
-
         try:
             await self._provider.delete_instance(session_token)
         except UazapiError as exc:

@@ -288,7 +288,8 @@ async def test_cancel_session_happy(
     mock_repo: MagicMock,
     fresh_store: SessionStore,
 ) -> None:
-    """``cancel_session`` disconnects, publishes 'expired', marks EXPIRED."""
+    """``cancel_session`` deletes the upstream instance (DELETE /instance
+    handles disconnect + remove atomically), publishes 'expired', marks EXPIRED."""
     svc = _svc(mock_provider, fresh_store)
 
     resp = await svc.create_session(client_ip="3.3.3.3")
@@ -296,7 +297,7 @@ async def test_cancel_session_happy(
 
     await svc.cancel_session(sid)
 
-    mock_provider.disconnect.assert_awaited_once_with("tok_svc")
+    mock_provider.delete_instance.assert_awaited_once_with("tok_svc")
 
     state = await fresh_store.get(sid)
     assert state is not None
@@ -324,12 +325,14 @@ async def test_cancel_session_already_terminal_silent(
     sid = resp.session_id
     await fresh_store.update(sid, status=SessionStatus.CONSUMED)
 
-    # Reset disconnect mock so we only count the call from inside cancel_session.
+    # Reset mocks so we only count calls from inside cancel_session.
     mock_provider.disconnect.reset_mock()
+    mock_provider.delete_instance.reset_mock()
 
     await svc.cancel_session(sid)
 
     mock_provider.disconnect.assert_not_called()
+    mock_provider.delete_instance.assert_not_called()
 
 
 # --------------------------------------------------------------------------- #

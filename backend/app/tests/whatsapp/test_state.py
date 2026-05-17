@@ -270,7 +270,7 @@ async def test_tick_expire_disconnects_and_publishes_expired(
 
     await fresh_store._tick_expire()
 
-    fake_provider.disconnect.assert_awaited_once_with("tok_expired")
+    fake_provider.delete_instance.assert_awaited_once_with("tok_expired")
 
     state_after = await fresh_store.get(sid)
     assert state_after is not None

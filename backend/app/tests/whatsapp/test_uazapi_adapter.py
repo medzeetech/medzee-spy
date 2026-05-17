@@ -206,14 +206,17 @@ async def test_disconnect_happy(
     assert last_call.request.headers.get("token") == "tok_xyz"
 
 
-async def test_delete_instance_resets_with_instance_token(
+async def test_delete_instance_uses_delete_endpoint_with_instance_token(
     mock_uazapi: respx.MockRouter,
     uazapi_base: str,
 ) -> None:
-    """`delete_instance` POSTs to /instance/reset with `token` header so the
-    tenant's device slot is freed for the next visitor."""
-    mock_uazapi.post(f"{uazapi_base}/instance/reset").mock(
-        return_value=httpx.Response(200, json={"status": "reset_ok"})
+    """`delete_instance` calls DELETE /instance with the `token` header.
+
+    Per uazapi docs, this disconnects the WhatsApp session AND removes the
+    instance row from the database — frees the device slot in one round-trip.
+    """
+    mock_uazapi.delete(f"{uazapi_base}/instance").mock(
+        return_value=httpx.Response(200, json={"response": "Instance Deleted"})
     )
 
     provider = UazapiProvider()
@@ -224,10 +227,9 @@ async def test_delete_instance_resets_with_instance_token(
 
     assert result is None
     last_call = mock_uazapi.calls[-1]
-    assert last_call.request.url.path == "/instance/reset"
-    assert last_call.request.method == "POST"
+    assert last_call.request.url.path == "/instance"
+    assert last_call.request.method == "DELETE"
     assert last_call.request.headers.get("token") == "tok_xyz"
-    # Admin operations would use the admintoken header — make sure we DIDN'T.
     assert "admintoken" not in last_call.request.headers
 
 

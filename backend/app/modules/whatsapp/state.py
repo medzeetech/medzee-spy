@@ -364,19 +364,11 @@ class SessionStore:
                 },
             )
 
-            # Best-effort: disconnect + delete the upstream instance to free
-            # the tenant's device slot. Both calls are independent — if
-            # disconnect fails we still attempt delete (slot recovery wins).
-            provider = get_provider()
+            # Best-effort: delete the upstream instance to free the tenant's
+            # device slot. uazapi's DELETE /instance also disconnects, so one
+            # call covers both.
             try:
-                await provider.disconnect(state.uazapi_token)
-            except Exception:
-                logger.warning(
-                    "provider disconnect on expire failed (ignored)",
-                    extra={"session_id": str(sid), "op": "expire"},
-                )
-            try:
-                await provider.delete_instance(state.uazapi_token)
+                await get_provider().delete_instance(state.uazapi_token)
             except Exception:
                 logger.warning(
                     "provider delete_instance on expire failed (ignored)",

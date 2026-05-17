@@ -175,19 +175,19 @@ class UazapiProvider:
         )
 
     async def delete_instance(self, session_token: str) -> None:
-        """Destroy the uazapi instance and free its device slot.
+        """Disconnect + destroy the uazapi instance in a single call.
 
-        Calls ``POST /instance/reset`` which (per the dashboard's "Apagar
-        Instância" action) wipes the instance entry — not just its auth state.
-        Use after ``disconnect`` in any cleanup path so the plan's device slot
-        becomes available for the next session.
+        Calls ``DELETE /instance`` with the per-instance ``token`` header,
+        which uazapi documents as: "The device has been successfully
+        disconnected and the instance has been deleted from the database."
+        Frees the tenant's device slot immediately — no separate disconnect
+        call required.
         """
         await self._request(
-            "POST",
-            "/instance/reset",
+            "DELETE",
+            "/instance",
             op="delete_instance",
             token=session_token,
-            json_body={},
         )
 
     async def list_all_instances(self) -> list[dict[str, Any]]:
