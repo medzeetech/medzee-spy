@@ -11,6 +11,7 @@ import logging
 import time
 from types import TracebackType
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -64,13 +65,18 @@ class UazapiProvider:
             self._client = None
 
     async def create_session(self) -> ProviderSession:
+        # uazapi (free tier especially) requires a `name` in the body — empty
+        # payload returns 400 "Missing Name or instanceName in payload". We
+        # generate an ephemeral identifier; the real session UUID is tracked
+        # separately by the service layer.
+        instance_name = f"medzee-spy-{uuid4().hex[:8]}"
         create_payload = await self._request(
             "POST",
             "/instance/create",
             op="create_session.create",
             token=settings.UAZAPI_ADMIN_TOKEN,
             token_header="admintoken",
-            json_body={},
+            json_body={"name": instance_name},
         )
         instance_token = _extract_instance_token(create_payload)
         if not instance_token:
