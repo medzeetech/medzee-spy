@@ -82,12 +82,22 @@ async def generate_report_pipeline(
     *,
     user_id: UUID | None = None,
     llm: LLMClient | None = None,
+    report_id: UUID | None = None,
 ) -> None:
     """Public entry. Fire-and-forget. NEVER raises out.
 
+    Two entry modes:
+
+    * **F3 mode** (``report_id=None``): legacy F1 → F3 flow. The worker
+      creates the row itself (or reuses a placeholder from
+      ``consume_extracted``).
+    * **F4 mode** (``report_id`` provided by caller): the row was already
+      INSERTed by ``ReportService.trigger_generate`` with the right
+      ``period_days``. Skip the create step and reuse the caller's id.
+
     Sequence:
         1. Resolve ``clinic_segment`` (from ``users_profile`` if user_id, else 'outro').
-        2. ``repository.create_generating`` → ``report_id``.
+        2. Get/create the ``report_id`` (depends on entry mode above).
         3. Run the inner pipeline inside ``asyncio.wait_for(timeout=120s)``:
            a. Compute deterministic metrics.
            b. Score.
@@ -106,6 +116,7 @@ async def generate_report_pipeline(
             "op": "generate_report",
             "session_id": str(session_id),
             "user_id": str(user_id) if user_id else None,
+            "report_id": str(report_id) if report_id else None,
             "message_count": payload.message_count,
             "conversation_count": payload.conversation_count,
             "partial": payload.partial,
@@ -114,33 +125,43 @@ async def generate_report_pipeline(
 
     clinic_segment = await _resolve_clinic_segment(user_id)
 
-    # Idempotência: se signup chegou antes do extract terminar,
-    # ``consume_extracted`` já criou uma row placeholder com
-    # ``status='generating'``. Reusamos essa em vez de criar duplicado.
-    try:
-        existing = await repository.get_existing_for_session(session_id)
-        if existing is not None:
-            report_id = UUID(str(existing["id"]))
-            logger.info(
-                "worker.report.reusing_placeholder_row",
-                extra={
-                    "op": "generate_report",
-                    "session_id": str(session_id),
-                    "report_id": str(report_id),
-                },
-            )
-        else:
-            report_id = await repository.create_generating(
-                whatsapp_session_id=session_id,
-                user_id=user_id,
-                clinic_segment=clinic_segment,
-            )
-    except Exception:
-        logger.exception(
-            "worker.report.create_failed",
-            extra={"op": "generate_report", "session_id": str(session_id)},
+    # F4: caller (ReportService.trigger_generate) already created the row.
+    # Skip create logic entirely.
+    if report_id is not None:
+        logger.info(
+            "worker.report.using_caller_provided_row",
+            extra={
+                "op": "generate_report",
+                "session_id": str(session_id),
+                "report_id": str(report_id),
+            },
         )
-        return  # Nothing else to do — we can't even mark a row failed.
+    else:
+        # F3 mode: create (or reuse placeholder from consume_extracted).
+        try:
+            existing = await repository.get_existing_for_session(session_id)
+            if existing is not None:
+                report_id = UUID(str(existing["id"]))
+                logger.info(
+                    "worker.report.reusing_placeholder_row",
+                    extra={
+                        "op": "generate_report",
+                        "session_id": str(session_id),
+                        "report_id": str(report_id),
+                    },
+                )
+            else:
+                report_id = await repository.create_generating(
+                    whatsapp_session_id=session_id,
+                    user_id=user_id,
+                    clinic_segment=clinic_segment,
+                )
+        except Exception:
+            logger.exception(
+                "worker.report.create_failed",
+                extra={"op": "generate_report", "session_id": str(session_id)},
+            )
+            return  # Nothing else to do — we can't even mark a row failed.
 
     client = llm if llm is not None else get_llm_client()
 

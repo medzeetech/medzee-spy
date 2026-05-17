@@ -192,6 +192,26 @@ async def update_partial(
     )
 
 
+async def update_period_days(report_id: UUID, period_days: int) -> None:
+    """Set the window length (F4) on a report row.
+
+    Called by :func:`ReportService.trigger_generate` right after
+    :func:`create_generating` so the row remembers which window the user
+    chose. Separate from create_generating to keep the create signature
+    stable for F3 callers that don't know about period_days.
+    """
+    await asyncio.to_thread(
+        lambda: _table()
+        .update({"period_days": period_days})
+        .eq("id", str(report_id))
+        .execute()
+    )
+    logger.info(
+        "repo.reports.update_period_days",
+        extra={"report_id": str(report_id), "period_days": period_days},
+    )
+
+
 async def update_failed(report_id: UUID, *, error_code: str) -> None:
     """Mark a report as failed with a stable ``error_code``.
 
