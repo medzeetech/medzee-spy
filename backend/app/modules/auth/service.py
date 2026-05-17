@@ -249,6 +249,28 @@ class AuthService:
             )
             raise ProfileCreationFailed(str(user_id)) from exc
 
+        # Step 4b — F4-07: link user_id em SessionStore in-memory pra o
+        # webhook ``messages`` da uazapi conseguir atribuir cada msg nova
+        # ao usuário recém-criado. Lazy import + best-effort: se falhar,
+        # signup ainda completa; só perdemos captura até o user
+        # reconectar.
+        if req.whatsapp_session_id is not None:
+            try:
+                from app.modules.whatsapp.state import session_store
+                await session_store.update(
+                    req.whatsapp_session_id, user_id=user_id
+                )
+            except Exception:
+                logger.warning(
+                    "service.auth.signup.session_store_link_failed",
+                    extra={
+                        "op": "signup",
+                        "user_id": str(user_id),
+                        "session_id": str(req.whatsapp_session_id),
+                    },
+                    exc_info=True,
+                )
+
         # Step 5 — bridge with F1 (non-fatal).
         report_pending, session_warning = await self._maybe_consume_whatsapp_session(
             req.whatsapp_session_id, user_id

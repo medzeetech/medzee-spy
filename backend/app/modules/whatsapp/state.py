@@ -72,6 +72,10 @@ class SessionState:
     )
     failed_code: str | None = None
     message_count: int = 0
+    # F4-07: pré-condição pro webhook ``messages`` saber a quem atribuir
+    # cada msg. Linkado em ``AuthService.signup`` quando o user passa
+    # ``whatsapp_session_id`` no corpo. ``None`` enquanto sessão anônima.
+    user_id: UUID | None = None
 
 
 class SessionStore:
