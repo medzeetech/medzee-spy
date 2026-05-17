@@ -19,9 +19,19 @@
   Como aplicar: schema `medzee_spy.*`; migrations criam `medzee_spy.whatsapp_sessions` (F1, **aplicada**), `medzee_spy.users_profile` (F2, **aplicada**), `medzee_spy.reports` (F3). Identidade compartilhada via `auth.users(id)`. Tag soft em `auth.users.raw_app_meta_data.projects = ['spy']` aplicada no signup do F2 via `auth.admin.update_user_by_id`.
   Migrations aplicadas: `f1_1` (criação), `f1_2` (hardening), `f1_3` (rename), `f1_4` (recreate com grants pra `authenticator`), `f1_5` (placeholder `medzee` vazio pra destravar PostgREST), `f2_1_users_profile` (perfil + RLS owner-only + trigger updated_at).
 
-- **D4 (2026-05-17) — Nenhuma mensagem persistida no banco/log/disco.**
-  Por quê: privacidade prometida na landing + risco LGPD para dados de saúde.
-  Como aplicar: pipeline lê em memória → gera relatório → descarta mensagens. Persiste apenas o relatório estruturado em `medzee_spy.reports.payload` (jsonb) e metadados agregados (counts, médias) em `medzee_spy.whatsapp_sessions`. Logs registram só counts e tempos.
+- **D4 (REVOGADA 2026-05-17 pelo F4-21) — Mensagens persistidas com TTL e RLS.**
+  Substitui a decisão anterior ("nenhuma mensagem persistida") que se tornou
+  inviável quando F1 pull-history falhou no uazapi free e o paid tem quota
+  limitada. F4 forward-capture exige persistir mensagens entre coleta e
+  relatório.
+  Mitigações:
+    - TTL: 30 dias após a session whatsapp desconectar (job background diário
+      em `app/workers/ttl_cleanup.py`).
+    - RLS owner-only em `medzee_spy.captured_messages`.
+    - Supabase storage encryption nativo (at-rest) + TLS em trânsito.
+    - Logs NUNCA incluem o campo `text` ou `contact_name`; só counts +
+      UUIDs + time ranges.
+  Decisão antiga preservada na seção "Decisões obsoletas" pra histórico.
 
 - **D5 (2026-05-17) — Stream backend ↔ frontend = SSE (Server-Sent Events).**
   Por quê: uso unidirecional (status → frontend); FastAPI suporta nativamente via `StreamingResponse`; `EventSource` no browser auto-reconecta.
@@ -34,9 +44,25 @@
 - **D7 (2026-05-17) — Execução em container separado já no dev/staging.**
   Aplicado: Railway hospedando FastAPI via Procfile + nixpacks. Frontend `npm run dev` local apontando pro Railway via `VITE_API_BASE_URL`.
 
+- **D8 (2026-05-17 — F4 pivot) — Ingestão via forward-capture, não pull-history.**
+  Webhook da uazapi captura cada mensagem nova em `medzee_spy.captured_messages`.
+  Relatório é on-demand: user clica "Gerar agora" e escolhe janela
+  (7/15/30/60 dias). Worker F3 (`generate_report_pipeline`) é reusado
+  via novo `report_id` opcional que permite reusar uma row criada
+  upstream.
+  Por quê: única estratégia viável dado que uazapi free não suporta
+  /chat/find e o paid tem quota apertada de instâncias.
+  Trade-off aceito: tempo-pra-primeiro-relatório vai de "5 min" pra
+  "N dias" (depende da janela escolhida); UX de demo perde impacto mas
+  a tese de produto continua viva.
+
 ## Decisões obsoletas
 
 - **~~Storage do auth state do Baileys (Supabase Storage)~~** — N/A: uazapi gerencia o auth state nos servidores deles (D1). Pergunta inicial perdeu sentido.
+
+- **~~D4 original (2026-05-17) — Nenhuma mensagem persistida no banco/log/disco.~~** (REVOGADA pelo D8 + F4-21 em 2026-05-17)
+  Por quê: privacidade prometida na landing + risco LGPD para dados de saúde.
+  Como aplicar: pipeline lê em memória → gera relatório → descarta mensagens. Persiste apenas o relatório estruturado em `medzee_spy.reports.payload` (jsonb) e metadados agregados (counts, médias) em `medzee_spy.whatsapp_sessions`. Logs registram só counts e tempos.
 
 ## Blockers
 
@@ -46,8 +72,14 @@
 - **B2 (aberto) — Supabase Auth: `leaked_password_protection` desabilitada (project-wide).**
   Advisor detectou que o Supabase Auth do projeto News não tem proteção contra senhas vazadas. Habilitar via Dashboard → Authentication antes do F2 ir pra produção.
 
-- **B3 (aberto) — uazapi free tier devolve 500 em `/chat/find` logo após `connected`.**
-  Observado no smoke F1: o webhook chega com `instance.status=connected` em ~20s após o scan, mas se chamamos `/chat/find` no mesmo momento, uazapi devolve 500. Provavelmente o history sync interno do uazapi ainda não terminou. **Plano**: na implementação real de F3, adicionar delay de ~5s entre `connected` e o start do extract pipeline, mais retry com backoff em 5xx. Pode ser exclusivo do tier free (paid talvez já tenha o history pronto). Não bloqueia F2 (auth/persist independem do extract); bloqueia o relatório real funcionar.
+- **B3 (RESOLVIDO 2026-05-17 — abandonando pull-history) — uazapi free
+  `/chat/find` não disponível no tier gratuito.**
+  Empiricamente confirmado: mesmo após 220s de retry budget (10/30/60/120s
+  backoff) o endpoint continua devolvendo 500. Não é timing de history sync
+  — é feature paga. F4 pivota pra forward-capture (webhook → DB) que
+  funciona em qualquer tier que entregue webhook de mensagens.
+  Implicação: F1 extract worker mantido como dead code reabilitável
+  (F4-22), todo o pipeline F3 reusado intacto (vide F4 design § 1).
 
 ## Lições
 
@@ -78,6 +110,16 @@
 - **L9 (2026-05-17, F2) — Detecção de "email duplicado" no Supabase Auth precisa do code E da mensagem.**
   `auth.admin.create_user` levanta `gotrue.errors.AuthApiError` com formatos variados conforme versão: às vezes `code="user_already_exists"`, às vezes `code="email_address_already_in_use"`, às vezes só mensagem `"User already registered"` sem `code`. AuthService faz fingerprint em ambos os eixos (`code in {...}` OR substring no `message`) pra ser robusto. Mesmo padrão usado pra `invalid_credentials` no login.
 
+- **L10 (2026-05-17 — F4 lesson) — Adapter Protocol + worker desacoplado pagam
+  o pivô completo de ingestão em ~3 dias.**
+  F1 design abstraiu `WhatsAppProvider` Protocol e F3 design fez
+  `generate_report_pipeline(session_id, payload, *, user_id, llm, report_id)`
+  aceitar payload em vez de construir do nada. Resultado: F4 trocou COMO os
+  dados chegam (webhook em vez de pull) sem tocar metrics, sampling, prompts,
+  Claude integration ou schemas. Single-day refactor em vez de rewrite.
+  Lição: invest em abstração no design phase paga muito quando o produto
+  pivota.
+
 ## Todos (cross-sessão)
 
 - [x] ~~Confirmar modelo LLM default~~ → D2 ratificada (Anthropic Claude).
@@ -93,6 +135,8 @@
 - [ ] **Migration F3**: `medzee_spy.reports (id, user_id, session_id, status, payload jsonb, prompt_version, model, ...)`.
 - [ ] Mover `AGENT_ID` da Marina (ElevenLabs) de hardcode para `import.meta.env.VITE_ELEVENLABS_AGENT_ID` em `AgentScreen.jsx` (CONCERNS R8).
 - [ ] (Opcional, pós-MVP) State persistence — hoje `SessionStore` é in-memory; redeploy do Railway perde sessões abertas. Considerar Redis ou rehidratação via DB no startup quando volume justificar.
+- [x] ~~F4 forward-capture implementado~~ — migration f4_1, captured_messages module, webhook event=messages, GET /whatsapp/status, POST /reports/generate, TTL job, frontend WhatsAppPage + GenerateReportModal. Suite 172/172. Smoke E2E pendente em uazapi paid (Wave 7 testes + smoke fecham F4).
+- [ ] **B2 follow-up** — habilitar leaked password protection no Supabase (1 clique no Dashboard) antes do F4 ir pra prod.
 
 ## Ideias adiadas
 

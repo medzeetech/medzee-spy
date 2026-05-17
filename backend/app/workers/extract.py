@@ -1,4 +1,47 @@
-"""Extract pipeline worker (F1 — design § 6).
+"""DEPRECATED · Extract pipeline worker (F1, dead code as of F4 pivot).
+
+This module was the F1 pull-history strategy: scan QR → fetch last 30 days
+from uazapi → hand off to F3 worker. **It is no longer invoked** at runtime
+since the F4 pivot to forward-capture (see `.specs/features/f4-forward-capture/`
+and STATE.md D4/B3/D8).
+
+WHY DEPRECATED
+--------------
+* uazapi free returns 500 permanently on ``/chat/find`` — not a timing issue,
+  the endpoint is a paid feature (confirmed empirically with full retry budget
+  of 220s).
+* uazapi paid hit quota limits during F3 smoke (max instances per plan).
+* F4 substitutes the data source: webhook persists each new message to
+  ``medzee_spy.captured_messages``; user clicks "Gerar relatório" on-demand
+  with a chosen window. Worker F3 (``app.workers.report``) is reused unchanged
+  via the new ``report_id`` parameter (see ``app.modules.reports.service.
+  trigger_generate`` + ``_build_extracted_payload``).
+
+WHY KEPT (NOT DELETED)
+----------------------
+The algorithm (parallel fan-out per chat, B3 retry, partial-on-timeout,
+report kick-off) is non-trivial. If we ever migrate to a provider where
+``/chat/find`` works (e.g. Evolution API self-hosted, or uazapi paid with
+fixed quota), reactivation is just:
+
+1. Re-enable the call site at the webhook handler when ``event=connection``
+   fires with ``status=connected`` (commented out in
+   ``app/modules/whatsapp/service.py::_handle_connection_event`` if any
+   reactivation lands, OR add a feature flag).
+2. Remove the ``warnings.warn`` line at ``extract_30d_pipeline`` entry.
+3. Update STATE.md D8 to reflect the dual-mode (forward + history).
+
+CALL SITES
+----------
+At F4 pivot time, **the only caller was the connection-event handler**, which
+now no-ops on this. The kick-off helpers (``_kick_off_report``,
+``_run_report_with_user``) at the bottom of this file are also dormant
+together with the rest of the module.
+
+Algorithm notes preserved below for the future re-enabler
+=========================================================
+
+Original module design (F1 — design § 6):
 
 Drives the 30-day WhatsApp history pull after the session transitions to
 ``CONNECTED``. Runs entirely off the request path — it's scheduled by the
@@ -91,6 +134,14 @@ async def extract_30d_pipeline(session_id: UUID) -> None:
     error and converts it to either an ``extracted`` (partial) or
     ``failed`` SSE event — never raises out of this coroutine.
     """
+    import warnings as _warnings  # local import to keep the warning visible without polluting module-level imports
+    _warnings.warn(
+        "extract_30d_pipeline is deprecated since the F4 pivot to forward-capture. "
+        "No runtime path should invoke this. See app/workers/extract.py module "
+        "docstring for reactivation notes.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     started_at = time.monotonic()
     state = await session_store.get(session_id)
     if state is None:

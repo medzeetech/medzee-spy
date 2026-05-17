@@ -1,7 +1,7 @@
 # Roadmap
 
 **Current Milestone:** M1 — Fluxo ponta a ponta funcional
-**Status:** In Progress (F1 ✅ done · F2 ✅ code complete, smoke pending · F3 next)
+**Status:** In Progress (F1 ✅ deprecated · F2 ✅ done · F3 ✅ code done · F4 🟡 code done, smoke pendente · F5 not started)
 
 ---
 
@@ -24,6 +24,12 @@
 
 **Commits-chave:** `aa173ef` (pivot uazapi), `b1efae4` (Wave 1+2 core), `381094c` (Wave 3 service+worker), `1b27f55` (routes), `2191622` (wiring), `c9f2f23` (tests), `da27eef` (Railway), `618f2d1`+`d064f46` (F1.3 delete), `03002d8` (QRScreen wire), `6a7e0aa` (webhook shape fix).
 
+**Status realista pós-F4**: o `extract_30d_pipeline` ficou como dead code
+mantido pra reabilitar futuro (vide F4-22). uazapi free não entrega
+`/chat/find` (vide B3 RESOLVIDO em STATE.md). F4 pivotou pra
+forward-capture; toda a pipeline F3 (worker, prompts, Claude) é reusada
+sem mudança.
+
 **F2 — Auth & User Persistence** — ✅ CODE COMPLETE (2026-05-17, smoke pendente em produção)
 - Migration `f2_1_users_profile` aplicada: `medzee_spy.users_profile (user_id PK→auth.users, name, email, phone, ticket_medio, clinic_segment, ...)` + RLS owner-only + trigger updated_at
 - `POST /api/auth/signup`: admin.create_user (email_confirm=True) → merge `app_metadata.projects = [..., 'spy']` → insert profile (rollback delete_user on failure) → bridge F1 (`consume_extracted` não-fatal, marca `report_pending=False` + `session_warning` se quebrar) → `sign_in_with_password` retorna o par access/refresh
@@ -41,16 +47,26 @@
 - Persistência do relatório (`reports.payload jsonb`) vinculado ao `user_id`
 - Endpoint `GET /api/reports/:id` autenticado retorna o payload
 
-**F4 — Frontend Integration** — PLANNED
-- `/spy` consome QR real do backend via WS/polling
-- `GeneratingScreen` reflete progresso real do processamento
-- `LeadFormScreen` envia `POST /api/auth/signup` e armazena sessão
-- `ReportScreen` / `/app/reports/:id` consomem dados reais; mocks viram fallback de loading
-- Guard de rota autenticada via Supabase session
+**Smoke E2E**: nunca rodou end-to-end com dados reais porque dependia do
+F1 extract. F4 destrava — quando F4 smoke passar, F3 fecha junto.
+
+**F4 — Forward-Capture & On-Demand Reports** — 🟡 CODE COMPLETE (2026-05-17, smoke pendente)
+- Migration `f4_1_captured_messages` (RLS owner-only, TTL 30d após disconnect via job background)
+- Webhook handler estende uazapi `event=messages` (3 shapes) + persiste em batch via upsert dedup
+- `GET /api/whatsapp/status`: counts em tempo real (msgs/conversas/last_message_at)
+- `POST /api/reports/generate`: trigger on-demand com janela 7/15/30/60 dias + rate limit 1/min + mínimo 10 msgs
+- Worker F3 reusado via `report_id` opcional + adapter `_build_extracted_payload` que monta `ExtractedPayload` direto do `captured_messages`
+- TTL cleanup loop 24h em background (`workers/ttl_cleanup.py`)
+- Frontend: `WhatsAppPage` com 4 estados visuais (loading/disconnected/connected_no_messages/connected_with_data + warning 24h), `GenerateReportModal` com radio 7/15/30/60, `ReportsListPage` mostra `period_days` por item, `useWhatsappStatus` polling 5s
+- Original F4 "Frontend Integration" do plano antigo foi absorvido por F2+F3 (~80%, falta só route guard) — renomeada pra esta feature de pivot.
+
+**Commits-chave:** `abb01aa` (specs), `689e797` (Wave 1: migration + schemas + SessionStore.user_id), `0c0c68d` (Wave 2: repo + webhook handler + status endpoint + TTL + scaffold), `5a370f3` (Wave 3: worker adapter), `1dbdf34` (Wave 4: POST /generate), `7612d0e` (Wave 5: frontend).
 
 **F5 — DX & Docs** — PLANNED
 - README com setup local (backend + frontend + sidecar) e `.env` documentado
 - Script único `make dev` ou `pnpm dev` que sobe os 3 serviços
+
+**F6 — Route guards (opcional)** — guard de rota autenticada em /app/*. Resíduo do plano original F4 "Frontend Integration" não absorvido por F2/F3. Pequeno (~30 min). Não bloqueia M1 mas vale fazer antes de prod pública.
 
 ---
 
