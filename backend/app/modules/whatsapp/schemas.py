@@ -27,6 +27,18 @@ class SessionStatus(str, Enum):
     EXPIRED = "expired"
 
 
+# Statuses past which a session is effectively done: the SSE stream closes,
+# cancel is a no-op, and the TTL expire loop skips them. EXTRACTED is included
+# because once the payload is cached the session waits passively for F2 to
+# consume or for TTL — no further transitions a client triggers.
+TERMINAL_STATUSES: frozenset[SessionStatus] = frozenset({
+    SessionStatus.EXTRACTED,
+    SessionStatus.CONSUMED,
+    SessionStatus.FAILED,
+    SessionStatus.EXPIRED,
+})
+
+
 class CreateSessionResponse(BaseModel):
     session_id: UUID
     qr: str                       # base64 PNG, no prefix

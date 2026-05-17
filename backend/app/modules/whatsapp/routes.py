@@ -1,0 +1,285 @@
+"""HTTP / SSE routes for the WhatsApp module (design § 7).
+
+Thin wrappers on top of :class:`WhatsAppService` (T7) and ``session_store``
+(T6). The routes' only jobs are:
+
+* extract the inputs (path/query params, request body, client IP);
+* call the service / store;
+* translate exceptions into the HTTP shapes defined in design § 10;
+* in the SSE case, format the per-event wire frame per design § 9.
+
+No business logic lives here. Everything that touches uazapi, the repository,
+or the in-memory state machine is owned by the service / store / worker.
+
+Logging policy
+--------------
+We log a single structured entry on each route invocation (``op`` +
+``session_id`` when relevant). The service logs the detail (provider calls,
+elapsed_ms, error classes) so we don't duplicate. We **never** log:
+
+    * request bodies (especially the webhook payload — privacy + size);
+    * uazapi tokens / QR codes;
+    * full phone numbers (the service emits already-masked values).
+
+Wiring
+------
+This module exposes a single :data:`router` (``APIRouter``). T12 mounts it
+under ``/api/whatsapp`` in ``app/api/router.py``; mounting is intentionally
+deferred so the rest of F1 can land without touching the top-level router.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import AsyncIterator
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
+
+from app.clients.whatsapp.errors import (
+    UazapiBanned,
+    UazapiError,
+    UazapiTimeout,
+    UazapiUnavailable,
+)
+from app.contracts.responses import SuccessResponse
+from app.modules.whatsapp.schemas import (
+    TERMINAL_STATUSES,
+    CreateSessionResponse,
+    SSEEvent,
+    UazapiWebhookPayload,
+)
+from app.modules.whatsapp.service import (
+    RateLimitExceeded,
+    SessionNotFound,
+    WhatsAppService,
+    get_service,
+)
+from app.modules.whatsapp.state import session_store
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Endpoint 1 — POST /sessions (T9, WPP-01 / WPP-02 / WPP-16)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/sessions",
+    response_model=SuccessResponse[CreateSessionResponse],
+    summary="Create a new WhatsApp session and get a QR Code to scan",
+    tags=["whatsapp"],
+)
+async def create_session(
+    request: Request,
+    service: WhatsAppService = Depends(get_service),
+) -> SuccessResponse[CreateSessionResponse]:
+    """Spin up a uazapi instance and return the QR payload.
+
+    Translates service-layer errors to HTTP per design § 10:
+
+    ===============================  =========================
+    Exception                        HTTP response
+    ===============================  =========================
+    ``RateLimitExceeded``            429 ``too_many_sessions``
+    ``UazapiUnavailable`` / Timeout  503 ``uazapi_unavailable``
+    ``UazapiBanned``                 502 ``banned``
+    any other ``UazapiError``        503 ``uazapi_unavailable``
+    bare ``Exception``               (re-raised → 500)
+    ===============================  =========================
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    logger.info(
+        "route.create_session.enter",
+        extra={"op": "create_session", "client_ip": client_ip},
+    )
+
+    try:
+        result = await service.create_session(client_ip)
+    except RateLimitExceeded:
+        # WPP-16: caller hit > 3 attempts in 5 minutes.
+        raise HTTPException(status_code=429, detail="too_many_sessions")
+    except (UazapiUnavailable, UazapiTimeout):
+        raise HTTPException(status_code=503, detail="uazapi_unavailable")
+    except UazapiBanned:
+        raise HTTPException(status_code=502, detail="banned")
+    except UazapiError:
+        # Any other classified provider error collapses to "unavailable" —
+        # we don't leak provider-internal classifications to the client.
+        raise HTTPException(status_code=503, detail="uazapi_unavailable")
+
+    return SuccessResponse(data=result)
+
+
+# ---------------------------------------------------------------------------
+# Endpoint 2 — GET /sessions/{session_id}/events (T10, WPP-04/05/14/15)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/sessions/{session_id}/events",
+    summary="SSE stream of session lifecycle events",
+    tags=["whatsapp"],
+)
+async def session_events(session_id: UUID) -> StreamingResponse:
+    """Server-Sent Events stream for a single session.
+
+    Wire format (design § 9)::
+
+        event: <name>
+        data: <json(data)>
+        \\n
+
+    Each frame ends with a blank line (``\\n\\n``). Replay-last and terminal
+    semantics are handled inside :py:meth:`SessionStore.subscribe`:
+
+    * the first yielded event is ``state.last_event`` when present;
+    * the generator returns after a terminal event (``extracted``, ``failed``,
+      ``expired``) — closing the stream as required by WPP-15;
+    * the ``try/finally`` inside ``subscribe`` detaches the subscriber queue
+      when the client disconnects (FastAPI cancels the generator), so we
+      don't need explicit cleanup here.
+    """
+    logger.info(
+        "route.session_events.enter",
+        extra={"op": "session_events", "session_id": str(session_id)},
+    )
+
+    state = await session_store.get(session_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+
+    async def event_stream() -> AsyncIterator[bytes]:
+        event: SSEEvent
+        async for event in session_store.subscribe(session_id):
+            # ensure_ascii=False so the wire stays compact for any unicode
+            # in event payloads (phone masks, names) — SSE is UTF-8 by spec.
+            payload = json.dumps(event.data, ensure_ascii=False)
+            yield f"event: {event.name}\ndata: {payload}\n\n".encode("utf-8")
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # nginx / proxy hint — disable buffering
+            "Connection": "keep-alive",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Endpoint 3 — POST /webhook (T11, WPP-06 / WPP-07 / EC-06)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/webhook",
+    status_code=200,
+    summary="Callback from uazapi.com — forwarded to the session bus",
+    tags=["whatsapp", "webhook"],
+)
+async def uazapi_webhook(
+    payload: UazapiWebhookPayload,
+    session_id: UUID = Query(
+        ..., description="UUID from the registered callback URL"
+    ),
+    service: WhatsAppService = Depends(get_service),
+) -> dict:
+    """Receive a uazapi callback and dispatch it to the service.
+
+    Contract (design § 7.3 / EC-06):
+
+    * **Always** return 200 ``{"status": "ok"}``. Anything else makes uazapi
+      retry indefinitely, which would amplify a transient error into a
+      stampede.
+    * Must return in < 5s. The service already schedules the heavy extract
+      work via :py:func:`asyncio.create_task`, so calling
+      :py:meth:`handle_webhook_event` is itself fast (it only updates state
+      and publishes the ``connected`` event before returning).
+    * Unknown ``session_id`` → silently no-op (the service handles it and
+      logs at debug). We do **not** raise 404 — uazapi would retry forever.
+
+    Privacy note: we log only the ``event`` discriminator and the
+    ``session_id``; the rest of the payload is left to the service to handle
+    and is never written to logs (WPP-10).
+    """
+    logger.info(
+        "route.webhook.enter",
+        extra={
+            "op": "uazapi_webhook",
+            "session_id": str(session_id),
+            "event": payload.event,
+        },
+    )
+
+    try:
+        await service.handle_webhook_event(session_id, payload)
+    except Exception:
+        # Swallow + log: webhook must stay 2xx so uazapi doesn't retry-storm.
+        logger.exception(
+            "route.webhook.handler_failed",
+            extra={
+                "op": "uazapi_webhook",
+                "session_id": str(session_id),
+                "event": payload.event,
+            },
+        )
+
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Endpoint 4 — DELETE /sessions/{session_id} (T11, WPP-12)
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/sessions/{session_id}",
+    summary="Cancel an in-progress session",
+    tags=["whatsapp"],
+)
+async def cancel_session(
+    session_id: UUID,
+    service: WhatsAppService = Depends(get_service),
+) -> dict:
+    """Manually cancel a session (frontend calls this on /spy unload).
+
+    Responses:
+
+    * ``200 {"status": "cancelled"}`` — session was active and got cancelled.
+    * ``200 {"status": "already_terminal"}`` — session existed but was
+      already in a terminal status (``consumed``/``failed``/``expired``/
+      ``extracted``); the service is a silent no-op in that case so we
+      detect it by sniffing the state *before* calling the service.
+    * ``404 session_not_found`` — no such session in memory.
+    """
+    logger.info(
+        "route.cancel_session.enter",
+        extra={"op": "cancel_session", "session_id": str(session_id)},
+    )
+
+    # Peek state to distinguish "already terminal" from "cancelled" — the
+    # service's cancel_session() does not raise in the terminal case, so
+    # we have to check ourselves to return a meaningful status string.
+    state = await session_store.get(session_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+
+    if state.status in TERMINAL_STATUSES:
+        return {"status": "already_terminal"}
+
+    try:
+        await service.cancel_session(session_id)
+    except SessionNotFound:
+        # Race: session vanished between the peek and the service call.
+        raise HTTPException(status_code=404, detail="session_not_found")
+
+    return {"status": "cancelled"}
+
+
+__all__ = ["router"]

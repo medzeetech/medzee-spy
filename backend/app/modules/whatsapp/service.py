@@ -78,15 +78,8 @@ class SessionNotFound(ServiceError):
 _RATE_LIMIT_WINDOW_S: float = 300.0   # 5 minutes
 _RATE_LIMIT_MAX_ATTEMPTS: int = 3     # > 3 in the window → reject
 
-# Statuses where a DELETE / cancel is a silent no-op (already done).
-_TERMINAL_STATUSES: frozenset[SessionStatus] = frozenset(
-    {
-        SessionStatus.CONSUMED,
-        SessionStatus.FAILED,
-        SessionStatus.EXPIRED,
-        SessionStatus.EXTRACTED,
-    }
-)
+# Re-exported alias kept for backwards compatibility with the route layer.
+from app.modules.whatsapp.schemas import TERMINAL_STATUSES as _TERMINAL_STATUSES  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------

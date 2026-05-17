@@ -36,15 +36,8 @@ from app.modules.whatsapp.schemas import (
 
 logger = logging.getLogger(__name__)
 
-# Statuses that mean "stream is done, do not keep the SSE connection open".
-_TERMINAL_STATUSES: frozenset[SessionStatus] = frozenset(
-    {
-        SessionStatus.EXTRACTED,
-        SessionStatus.CONSUMED,
-        SessionStatus.FAILED,
-        SessionStatus.EXPIRED,
-    }
-)
+# Re-exported with a state-local alias for readability inside the subscriber loop.
+from app.modules.whatsapp.schemas import TERMINAL_STATUSES as _STREAM_END_STATUSES  # noqa: E402,F401
 
 # Statuses that the TTL expire loop should leave alone (already done).
 _EXPIRE_EXEMPT: frozenset[SessionStatus] = frozenset(
@@ -301,7 +294,7 @@ class SessionStore:
         try:
             if state.last_event is not None:
                 yield state.last_event
-                if state.status in _TERMINAL_STATUSES:
+                if state.status in _STREAM_END_STATUSES:
                     return
             while True:
                 event = await queue.get()
