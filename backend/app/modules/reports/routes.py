@@ -1,22 +1,30 @@
-"""HTTP routes for the reports module (F3 §7 + §11).
+"""HTTP routes for the reports module (F3 §7 + §11 + F4-11..13).
 
-Three GET endpoints under ``/api/reports``:
+Four endpoints under ``/api/reports``:
 
-* ``GET /reports/latest``     — most recent report of the authenticated user.
-* ``GET /reports/{id}``       — single report; 404 if missing or cross-user.
-* ``GET /reports/``           — paginated list (default 20/page).
+* ``GET  /reports/latest``     — most recent report of the authenticated user.
+* ``GET  /reports/{id}``       — single report; 404 if missing or cross-user.
+* ``GET  /reports/``           — paginated list (default 20/page).
+* ``POST /reports/generate``   — F4: trigger a new on-demand report over a
+                                 user-selected window (7/15/30/60 days).
 
 All endpoints require a valid Supabase JWT via ``get_current_user_id`` (F2).
 """
 from __future__ import annotations
 
 import logging
+import os
+import time
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.contracts.responses import SuccessResponse
 from app.core.security import get_current_user_id
+from app.modules.captured_messages.schemas import (
+    GenerateReportRequest,
+    GenerateReportResponse,
+)
 from app.modules.reports.schemas import ReportListResponse, ReportResponse
 from app.modules.reports.service import (
     ReportNotFound,
@@ -27,6 +35,39 @@ from app.modules.reports.service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ─── F4: rate limit + min volume thresholds (overridable via env) ─────
+
+# Minimum captured messages required before user can generate a report
+# (EC-02: avoid useless reports on near-empty datasets). Configurable
+# pra dev/smoke poder relaxar.
+_GENERATE_MIN_MESSAGES: int = int(
+    os.environ.get("REPORTS_GENERATE_MIN_MESSAGES", "10")
+)
+
+# Rate limit: 1 generation per N seconds per user (EC-03). Prevents
+# accidental double-clicks and abuse. In-memory bucket — sufficient pro
+# MVP. Em produção c/ múltiplas réplicas viraria Redis ou similar.
+_GENERATE_RATE_S: float = float(
+    os.environ.get("REPORTS_GENERATE_RATE_S", "60")
+)
+
+_last_generate_call: dict[str, float] = {}
+
+
+def _check_rate_limit(user_id: UUID) -> None:
+    """Raise 429 if user generated < ``_GENERATE_RATE_S`` ago."""
+    key = str(user_id)
+    now = time.monotonic()
+    last = _last_generate_call.get(key)
+    if last is not None and (now - last) < _GENERATE_RATE_S:
+        retry_in = int(_GENERATE_RATE_S - (now - last))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"too_many_generations_retry_in_{retry_in}s",
+        )
+    _last_generate_call[key] = now
 
 
 @router.get(
@@ -80,6 +121,72 @@ async def list_reports(
 ) -> SuccessResponse[ReportListResponse]:
     result = await service.list_for_user(user_id, page=page, page_size=page_size)
     return SuccessResponse(data=result)
+
+
+# ─── F4-11..13: on-demand report generation ───────────────────────────
+
+
+@router.post(
+    "/generate",
+    response_model=SuccessResponse[GenerateReportResponse],
+    summary="Trigger a new on-demand report over a user-chosen window",
+)
+async def generate_report(
+    req: GenerateReportRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    service: ReportService = Depends(get_report_service),
+) -> SuccessResponse[GenerateReportResponse]:
+    """Dispara um relatório novo on-demand (F4-11).
+
+    Pré-condições verificadas aqui (route layer):
+    1. Rate limit: 1 generation por ``REPORTS_GENERATE_RATE_S`` segundos
+       por user (default 60s). Excedeu → 429 ``too_many_generations_*``.
+    2. Volume mínimo: stats_for_user(user_id).message_count >= 10
+       (default override via ``REPORTS_GENERATE_MIN_MESSAGES``). Não atingiu
+       → 422 ``not_enough_data``.
+
+    Em sucesso retorna ``{report_id, status: 'generating'}`` imediato; o
+    frontend navega pra ``/app/reports/{id}`` e polla até status terminal.
+    """
+    # 1. Rate limit
+    _check_rate_limit(user_id)
+
+    # 2. Min volume — lazy import pra não acoplar reports.routes ao módulo
+    #    captured_messages na import chain.
+    try:
+        from app.modules.captured_messages import repository as captured_repo
+        stats = await captured_repo.stats_for_user(user_id)
+    except Exception:
+        # Se o repo de captured falhar, ainda permite gerar (worker vai
+        # criar relatório vazio que vai falhar com diagnóstico claro).
+        logger.warning(
+            "route.reports.generate.stats_check_failed",
+            extra={"user_id": str(user_id)},
+            exc_info=True,
+        )
+        stats = {"message_count": 0}
+
+    if stats.get("message_count", 0) < _GENERATE_MIN_MESSAGES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="not_enough_data",
+        )
+
+    # 3. Dispatch
+    report_id = await service.trigger_generate(
+        user_id, period_days=req.period_days
+    )
+    logger.info(
+        "route.reports.generate.dispatched",
+        extra={
+            "user_id": str(user_id),
+            "report_id": str(report_id),
+            "period_days": req.period_days,
+        },
+    )
+    return SuccessResponse(
+        data=GenerateReportResponse(report_id=report_id)
+    )
 
 
 __all__ = ["router"]
