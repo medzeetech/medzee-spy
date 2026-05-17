@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,12 +7,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    if settings.API_BASE_URL.startswith("http://localhost"):
+        logger.warning(
+            "API_BASE_URL=%s is local — uazapi cannot deliver webhooks. "
+            "Run cloudflared/ngrok and set API_BASE_URL to the tunnel URL in .env.",
+            settings.API_BASE_URL,
+        )
     yield
-    # Shutdown
 
 
 app = FastAPI(
