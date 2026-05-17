@@ -20,6 +20,26 @@ async def lifespan(app: FastAPI):
             settings.API_BASE_URL,
         )
 
+    # Quote-trap diagnostic: Railway-style env entry may keep literal quotes
+    # in the value. Warn loudly so deploys don't fail silently with "uazapi
+    # unavailable" downstream.
+    for name, value in (
+        ("API_BASE_URL", settings.API_BASE_URL),
+        ("UAZAPI_BASE_URL", settings.UAZAPI_BASE_URL),
+        ("SUPABASE_URL", settings.SUPABASE_URL),
+    ):
+        if value and (value.startswith('"') or value.endswith('"')):
+            logger.error(
+                "config: %s contains literal quote chars (value starts/ends "
+                "with \"). Re-enter in Railway Raw Editor without surrounding "
+                "quotes. len=%d head=%r",
+                name,
+                len(value),
+                value[:30],
+            )
+        elif not value:
+            logger.warning("config: %s is empty", name)
+
     session_store.start_expire_loop()
     logger.info("session_store TTL expire loop started")
     try:
