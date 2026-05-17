@@ -565,18 +565,37 @@ class WhatsAppService:
                 },
             )
 
-        # 1b. F3 §REPORT-12: link the user to the report row if it exists.
-        # The report row is created by the extract → report worker as soon as
-        # the payload is cached; on the happy path it's already there by the
-        # time signup arrives. If the worker hasn't created the row yet (race),
-        # this no-ops and the worker will pick up user_id when it later reads
-        # whatsapp_sessions.user_id. Lazy import avoids a circular dep.
+        # 1b. F3 §REPORT-12: ensure a reports row exists for this session so
+        # the frontend polling sees ``status='generating'`` instead of 404.
+        #
+        # Two paths converge here:
+        #   - Happy: extract already finished, worker already created the row.
+        #     We just link user_id (was NULL).
+        #   - Race: signup arrived before extract finished (very common on
+        #     uazapi free where extract can take 4-5 min due to history sync).
+        #     We insert a placeholder ``generating`` row; the worker later
+        #     reuses it via ``get_existing_for_session``.
+        #
+        # Lazy import avoids a circular dep on the reports module.
         try:
             from app.modules.reports import repository as reports_repo
-            await reports_repo.link_user(session_id, user_id)
+            existing_report = await reports_repo.get_existing_for_session(session_id)
+            if existing_report is None:
+                # Worker hasn't created the row yet — create a placeholder so
+                # the dashboard polling immediately sees ``generating``. The
+                # worker will UPDATE this row when extract completes (via
+                # ``get_existing_for_session`` in the worker).
+                await reports_repo.create_generating(
+                    whatsapp_session_id=session_id,
+                    user_id=user_id,
+                    clinic_segment="outro",
+                )
+            else:
+                # Row already exists — just backfill user_id.
+                await reports_repo.link_user(session_id, user_id)
         except Exception:
             logger.warning(
-                "service.consume_extracted.report_link_failed",
+                "service.consume_extracted.report_ensure_failed",
                 extra={
                     "op": "consume_extracted",
                     "session_id": str(session_id),

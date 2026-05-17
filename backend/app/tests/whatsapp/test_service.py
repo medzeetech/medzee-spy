@@ -434,14 +434,35 @@ async def test_consume_extracted_calls_reports_link_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """F3 §REPORT-12: after linking the whatsapp_sessions row to the user,
-    consume_extracted must also link the matching reports row. The import
-    is lazy inside service.consume_extracted, so we patch the function on
-    its origin module (``app.modules.reports.repository``)."""
+    consume_extracted must also link the matching reports row.
+
+    The current flow first checks whether a reports row exists for this
+    session via ``get_existing_for_session``:
+        - row exists → call ``link_user`` to backfill user_id.
+        - row absent (race: signup before extract finished) → call
+          ``create_generating`` to insert a placeholder.
+
+    This case exercises the "row exists" branch.
+    """
     from uuid import uuid4
 
+    reports_get_existing = AsyncMock(
+        name="reports.repository.get_existing_for_session",
+        return_value={"id": "00000000-0000-0000-0000-000000000077"},
+    )
     reports_link_user = AsyncMock(name="reports.repository.link_user")
+    reports_create_generating = AsyncMock(
+        name="reports.repository.create_generating",
+        return_value="00000000-0000-0000-0000-000000000077",
+    )
+    monkeypatch.setattr(
+        "app.modules.reports.repository.get_existing_for_session", reports_get_existing
+    )
     monkeypatch.setattr(
         "app.modules.reports.repository.link_user", reports_link_user
+    )
+    monkeypatch.setattr(
+        "app.modules.reports.repository.create_generating", reports_create_generating
     )
 
     svc = _svc(mock_provider, fresh_store)
@@ -452,7 +473,9 @@ async def test_consume_extracted_calls_reports_link_user(
     user_id = uuid4()
     await svc.consume_extracted(sid, user_id=user_id)
 
+    reports_get_existing.assert_awaited_once_with(sid)
     reports_link_user.assert_awaited_once_with(sid, user_id)
+    reports_create_generating.assert_not_awaited()
     # And the whatsapp-side link still happened too.
     mock_repo.link_user.assert_awaited_once()
 
@@ -468,18 +491,18 @@ async def test_consume_extracted_swallows_reports_link_failure(
     fresh_store: SessionStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failure inside ``reports.repository.link_user`` is best-effort —
+    """A failure inside the reports-side calls is best-effort —
     consume_extracted must log a warning and continue (mark_consumed still
     runs, payload still returns). Without this guarantee a transient
     reports outage would break the user-facing signup flow."""
     from uuid import uuid4
 
-    reports_link_user = AsyncMock(
-        name="reports.repository.link_user",
+    reports_get_existing = AsyncMock(
+        name="reports.repository.get_existing_for_session",
         side_effect=RuntimeError("reports schema down"),
     )
     monkeypatch.setattr(
-        "app.modules.reports.repository.link_user", reports_link_user
+        "app.modules.reports.repository.get_existing_for_session", reports_get_existing
     )
 
     svc = _svc(mock_provider, fresh_store)
@@ -494,6 +517,6 @@ async def test_consume_extracted_swallows_reports_link_failure(
     # No exception propagated; result is the (possibly-None) payload — what
     # matters here is that the call returned and downstream steps ran.
     assert result is None or hasattr(result, "message_count")
-    reports_link_user.assert_awaited_once_with(sid, user_id)
+    reports_get_existing.assert_awaited_once()
     mock_repo.mark_consumed.assert_awaited_once()
     mock_repo.link_user.assert_awaited_once()

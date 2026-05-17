@@ -523,6 +523,39 @@ async def _fail(
         },
     )
 
+    # F3: se já existe row de reports pra essa session (placeholder criado
+    # pelo signup), marca como failed pra frontend parar de polar com
+    # status='generating' eterno.
+    await _mark_report_failed_for_session(session_id, code)
+
+
+async def _mark_report_failed_for_session(session_id: UUID, code: str) -> None:
+    """Best-effort: marca a row reports vinculada como failed."""
+    try:
+        from app.modules.reports import repository as reports_repo
+        existing = await reports_repo.get_existing_for_session(session_id)
+        if existing is None:
+            return  # Nenhuma row foi criada — nada a fazer.
+        report_id = UUID(str(existing["id"]))
+        await reports_repo.update_failed(
+            report_id, error_code=f"extract_{code}"
+        )
+        logger.info(
+            "extract pipeline: linked report marked failed",
+            extra={
+                "op": "extract",
+                "session_id": str(session_id),
+                "report_id": str(report_id),
+                "error_code": f"extract_{code}",
+            },
+        )
+    except Exception:
+        logger.warning(
+            "extract pipeline: mark_report_failed failed (ignored)",
+            extra={"op": "extract", "session_id": str(session_id)},
+            exc_info=True,
+        )
+
 
 # ─── F3 integration: kick off report generation ───────────────────────
 

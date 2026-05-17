@@ -180,6 +180,9 @@ def fake_repository(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     update_partial = AsyncMock(return_value=None, name="update_partial")
     update_failed = AsyncMock(return_value=None, name="update_failed")
     link_user = AsyncMock(return_value=None, name="link_user")
+    get_existing_for_session = AsyncMock(
+        return_value=None, name="get_existing_for_session"
+    )
     get_by_id = AsyncMock(return_value=None, name="get_by_id")
     get_latest_for_user = AsyncMock(return_value=None, name="get_latest_for_user")
     list_for_user = AsyncMock(return_value=[], name="list_for_user")
@@ -190,6 +193,7 @@ def fake_repository(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         ("update_partial", update_partial),
         ("update_failed", update_failed),
         ("link_user", link_user),
+        ("get_existing_for_session", get_existing_for_session),
         ("get_by_id", get_by_id),
         ("get_latest_for_user", get_latest_for_user),
         ("list_for_user", list_for_user),
@@ -222,6 +226,7 @@ def fake_repository(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         update_partial=update_partial,
         update_failed=update_failed,
         link_user=link_user,
+        get_existing_for_session=get_existing_for_session,
         get_by_id=get_by_id,
         get_latest_for_user=get_latest_for_user,
         list_for_user=list_for_user,

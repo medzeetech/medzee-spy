@@ -40,6 +40,32 @@ def _table() -> Any:
     return get_supabase_admin_client().schema("medzee_spy").table("reports")
 
 
+async def get_existing_for_session(whatsapp_session_id: UUID) -> dict | None:
+    """Return the report row already attached to this WhatsApp session, or
+    ``None`` if none exists.
+
+    Used by the worker (idempotency: if a placeholder was inserted by
+    ``consume_extracted`` we want to UPDATE it instead of creating a duplicate)
+    and by ``_fail`` (to mark the placeholder as failed when extract dies).
+    """
+    result = await asyncio.to_thread(
+        lambda: _table()
+        .select("*")
+        .eq("whatsapp_session_id", str(whatsapp_session_id))
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(result, "data", None) or []
+    found = bool(rows)
+    logger.info(
+        "repo.reports.get_existing_for_session",
+        extra={"whatsapp_session_id": str(whatsapp_session_id), "found": found},
+    )
+    if not found:
+        return None
+    return rows[0]
+
+
 def _utcnow_iso() -> str:
     """Return the current UTC timestamp as an ISO 8601 string.
 

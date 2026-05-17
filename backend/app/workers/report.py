@@ -114,12 +114,27 @@ async def generate_report_pipeline(
 
     clinic_segment = await _resolve_clinic_segment(user_id)
 
+    # Idempotência: se signup chegou antes do extract terminar,
+    # ``consume_extracted`` já criou uma row placeholder com
+    # ``status='generating'``. Reusamos essa em vez de criar duplicado.
     try:
-        report_id = await repository.create_generating(
-            whatsapp_session_id=session_id,
-            user_id=user_id,
-            clinic_segment=clinic_segment,
-        )
+        existing = await repository.get_existing_for_session(session_id)
+        if existing is not None:
+            report_id = UUID(str(existing["id"]))
+            logger.info(
+                "worker.report.reusing_placeholder_row",
+                extra={
+                    "op": "generate_report",
+                    "session_id": str(session_id),
+                    "report_id": str(report_id),
+                },
+            )
+        else:
+            report_id = await repository.create_generating(
+                whatsapp_session_id=session_id,
+                user_id=user_id,
+                clinic_segment=clinic_segment,
+            )
     except Exception:
         logger.exception(
             "worker.report.create_failed",
@@ -234,6 +249,21 @@ async def _inner(
     )
 
     # 4. LLM call with 1 corrective retry on invalid JSON.
+    # Observability: emite log explícito ANTES e DEPOIS da chamada. Permite
+    # confirmar visualmente que Claude foi acionado de fato (não é fallback).
+    llm_started = time.monotonic()
+    logger.info(
+        "worker.report.llm_call.start",
+        extra={
+            "op": "generate_report",
+            "report_id": str(report_id),
+            "session_id": str(session_id),
+            "clinic_segment": clinic_segment,
+            "sampled_conversations": len(sampled),
+            "user_prompt_chars": len(user_prompt),
+            "system_prompt_chars": len(system_prompt),
+        },
+    )
     try:
         llm_dict = await llm.complete_json(
             system=system_prompt,
@@ -251,6 +281,20 @@ async def _inner(
             user=user_prompt + "\n" + _LLM_RETRY_NUDGE,
             schema=LLM_TOOL_SCHEMA,
         )
+
+    logger.info(
+        "worker.report.llm_call.done",
+        extra={
+            "op": "generate_report",
+            "report_id": str(report_id),
+            "session_id": str(session_id),
+            "elapsed_ms": int((time.monotonic() - llm_started) * 1000),
+            "opportunities_count": len(llm_dict.get("opportunities") or []),
+            "objections_count": len(llm_dict.get("objections") or []),
+            "faqs_count": len(llm_dict.get("faqs") or []),
+            "diagnostic_summary_chars": len(llm_dict.get("diagnostic_summary") or ""),
+        },
+    )
 
     # 5. Compose ReportPayload.
     benchmarks = _build_clinic_benchmarks(
