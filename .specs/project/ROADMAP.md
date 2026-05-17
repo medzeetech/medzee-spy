@@ -1,7 +1,7 @@
 # Roadmap
 
 **Current Milestone:** M1 — Fluxo ponta a ponta funcional
-**Status:** In Progress (F1 ✅ done, F2 next)
+**Status:** In Progress (F1 ✅ done · F2 ✅ code complete, smoke pending · F3 next)
 
 ---
 
@@ -24,11 +24,15 @@
 
 **Commits-chave:** `aa173ef` (pivot uazapi), `b1efae4` (Wave 1+2 core), `381094c` (Wave 3 service+worker), `1b27f55` (routes), `2191622` (wiring), `c9f2f23` (tests), `da27eef` (Railway), `618f2d1`+`d064f46` (F1.3 delete), `03002d8` (QRScreen wire), `6a7e0aa` (webhook shape fix).
 
-**F2 — Auth & User Persistence** — PLANNED
-- Schema Supabase: tabelas `users_profile` e `reports` (prefixadas para coexistir com News)
-- Endpoint `POST /api/auth/signup` cria usuário no Supabase Auth + perfil em `users_profile`
-- Retorna sessão (`access_token` + `refresh_token`) para o frontend logar automaticamente
-- Linka sessão ao `whatsapp_session_id` previamente gerado em F1
+**F2 — Auth & User Persistence** — ✅ CODE COMPLETE (2026-05-17, smoke pendente em produção)
+- Migration `f2_1_users_profile` aplicada: `medzee_spy.users_profile (user_id PK→auth.users, name, email, phone, ticket_medio, clinic_segment, ...)` + RLS owner-only + trigger updated_at
+- `POST /api/auth/signup`: admin.create_user (email_confirm=True) → merge `app_metadata.projects = [..., 'spy']` → insert profile (rollback delete_user on failure) → bridge F1 (`consume_extracted` não-fatal, marca `report_pending=False` + `session_warning` se quebrar) → `sign_in_with_password` retorna o par access/refresh
+- `POST /api/auth/login`: 401 indistinto pra invalid_credentials; 403 `user_not_in_spy` se user logado sem tag de projeto
+- `GET /api/auth/me` + `PATCH /api/auth/me`: JWT via `get_current_user_id` em `core/security.py`; whitelist de campos no update (rejeita email + user_id)
+- Frontend: `src/lib/{supabase,api}.js` (singleton + helper com auth header), `LoginScreen.jsx` standalone (rota `/login`, pre-fill via `?email=`, redirect signup 409 → /login), `LeadFormScreen` real (chama signup, mapeia 422 → field errors, 409 → redirect), botão **Login** top-right na `AgentScreen` (UX entry point pra usuário recorrente)
+- 35 testes novos (16 service + 6 repo + 13 routes) — **suite total 91/91 verde**, F1 sem regressão
+
+**Commits-chave:** `b1f3f67` (spec+design+tasks), `8b8cd44` (Wave 1: migration + schemas + exceptions), `5fe3c8c` (Wave 2: repo + security + scaffold + frontend lib), `2c0f177` (Wave 3: AuthService completo), `cd2a55f` (Wave 4: routes + router wiring), `99d29c1` (Waves 5+6: LoginScreen + LeadForm wire + 35 tests).
 
 **F3 — Report Processing** — PLANNED
 - Pipeline: mensagens brutas → normalização → agregação de métricas → prompt LLM → relatório estruturado

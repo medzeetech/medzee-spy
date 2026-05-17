@@ -16,8 +16,8 @@
 - **D3 (2026-05-17, revisada 2x) — Reutilizar instância Supabase do projeto "News" (`itghmlcipjloirsyhare`) com schema isolado `medzee_spy`. Reuso apenas de `auth.users` (compartilhado).**
   Por quê: o projeto News é uma newsletter médica diária; suas tabelas (`public.subscribers`, `articles`, `triagens` etc.) são tightly-coupled ao pipeline editorial — reusar `subscribers` exigiria ALTER e teria efeito colateral grave (lead Spy entraria na lista de envio do newsletter). Schema dedicado evita conflito total.
   Histórico de renomeação: inicialmente `medzee` (f1_1, f1_2), depois renomeado para `medzee_spy` (f1_3) pra clareza de namespace (não é "qualquer projeto Medzee", é especificamente o Spy). Migration `f1_4` recriou com grants completos (vide L1 nas Lições).
-  Como aplicar: schema `medzee_spy.*`; migrations criam `medzee_spy.whatsapp_sessions` (F1, **aplicada**), `medzee_spy.users_profile` (F2), `medzee_spy.reports` (F3). Identidade compartilhada via `auth.users(id)`. Tag soft em `auth.users.raw_app_meta_data.projects = ['spy']` no signup do F2.
-  Migrations aplicadas: `f1_1` (criação), `f1_2` (hardening), `f1_3` (rename), `f1_4` (recreate com grants pra `authenticator`), `f1_5` (placeholder `medzee` vazio pra destravar PostgREST).
+  Como aplicar: schema `medzee_spy.*`; migrations criam `medzee_spy.whatsapp_sessions` (F1, **aplicada**), `medzee_spy.users_profile` (F2, **aplicada**), `medzee_spy.reports` (F3). Identidade compartilhada via `auth.users(id)`. Tag soft em `auth.users.raw_app_meta_data.projects = ['spy']` aplicada no signup do F2 via `auth.admin.update_user_by_id`.
+  Migrations aplicadas: `f1_1` (criação), `f1_2` (hardening), `f1_3` (rename), `f1_4` (recreate com grants pra `authenticator`), `f1_5` (placeholder `medzee` vazio pra destravar PostgREST), `f2_1_users_profile` (perfil + RLS owner-only + trigger updated_at).
 
 - **D4 (2026-05-17) — Nenhuma mensagem persistida no banco/log/disco.**
   Por quê: privacidade prometida na landing + risco LGPD para dados de saúde.
@@ -72,6 +72,12 @@
 - **L7 (2026-05-17) — uazapi destroy real é `DELETE /instance` (sem ID na URL, header `token`), não `POST /instance/reset`.**
   Reset reseta connection state mas NÃO remove a instância do tenant → slot continua ocupado. DELETE faz disconnect + remoção atômicos. Crítico pro slot recycling em prod.
 
+- **L8 (2026-05-17, F2) — `MagicMock(spec=supabase.Client)` quebra a chain `.auth.admin.create_user`.**
+  Em supabase-py 2.x, `Client.auth` é um `@cached_property`. O `spec=` do MagicMock inspeciona os atributos *de classe*, não as descriptors resolvidas, e bloqueia o acesso a `.auth` → `AttributeError: Mock object has no attribute 'auth'`. Fix nos testes do F2: fixture `fake_supabase_admin` constrói um `MagicMock()` sem spec e configura manualmente os subpaths (`fake.auth.admin.create_user.return_value = ...`). Documentar em CONVENTIONS.md se outros módulos forem mockar o Client.
+
+- **L9 (2026-05-17, F2) — Detecção de "email duplicado" no Supabase Auth precisa do code E da mensagem.**
+  `auth.admin.create_user` levanta `gotrue.errors.AuthApiError` com formatos variados conforme versão: às vezes `code="user_already_exists"`, às vezes `code="email_address_already_in_use"`, às vezes só mensagem `"User already registered"` sem `code`. AuthService faz fingerprint em ambos os eixos (`code in {...}` OR substring no `message`) pra ser robusto. Mesmo padrão usado pra `invalid_credentials` no login.
+
 ## Todos (cross-sessão)
 
 - [x] ~~Confirmar modelo LLM default~~ → D2 ratificada (Anthropic Claude).
@@ -82,7 +88,8 @@
 - [ ] **Benchmark de extração**: rodar smoke com plano pago / volume real medindo tempo. Alvo: ≤ 90s.
 - [ ] **Validar política LGPD/DPA da uazapi** (B1).
 - [ ] Limpar Dashboard Supabase: remover schema `medzee` placeholder dos "Exposed schemas" quando seguro (atualmente mantido pra evitar L2 recorrente).
-- [ ] **Migration F2**: `medzee_spy.users_profile (user_id PK→auth.users, name, phone, ticket_medio, clinic_segment, ...)`.
+- [x] ~~**Migration F2**: `medzee_spy.users_profile (user_id PK→auth.users, name, phone, ticket_medio, clinic_segment, ...)`~~ — aplicada via `f2_1_users_profile` (RLS owner-only + trigger updated_at).
+- [ ] **Smoke F2 ponta-a-ponta** em produção (Railway): signup real → `auth.users` com `projects=['spy']` → `users_profile` populada → `whatsapp_sessions.status='consumed'`; signup duplicado → 409 → redirect `/login?email=`; login wrong/right; entrar autenticado em `/app/reports`.
 - [ ] **Migration F3**: `medzee_spy.reports (id, user_id, session_id, status, payload jsonb, prompt_version, model, ...)`.
 - [ ] Mover `AGENT_ID` da Marina (ElevenLabs) de hardcode para `import.meta.env.VITE_ELEVENLABS_AGENT_ID` em `AgentScreen.jsx` (CONCERNS R8).
 - [ ] (Opcional, pós-MVP) State persistence — hoje `SessionStore` é in-memory; redeploy do Railway perde sessões abertas. Considerar Redis ou rehidratação via DB no startup quando volume justificar.
