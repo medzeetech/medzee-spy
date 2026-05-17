@@ -2,6 +2,14 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { BarChart3, FileText, MessageCircle, LogOut, User } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import Logo from '../../components/Logo.jsx';
+import { useMe, shortName } from '../../lib/me.js';
+import { supabase } from '../../lib/supabase.js';
+
+const SEGMENT_PLAN_LABEL = {
+  saude: 'Plano Spy · Saúde',
+  odonto: 'Plano Spy · Odonto',
+  outro: 'Plano Spy',
+};
 
 const NAV_ITEMS = [
   { to: '/app/dashboard', label: 'Dashboard', Icon: BarChart3 },
@@ -34,7 +42,20 @@ function NavItem({ to, label, Icon }) {
 
 export default function DashboardLayout() {
   const navigate = useNavigate();
-  const userName = 'Dr. João';
+  const { me, loading: meLoading } = useMe();
+
+  // Mostra o nome real do user logado; placeholder discreto enquanto carrega.
+  const userName = meLoading ? '...' : shortName(me?.name) || 'Conta';
+  const planLabel = SEGMENT_PLAN_LABEL[me?.clinic_segment] || 'Plano Spy';
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // best-effort
+    }
+    navigate('/login');
+  };
 
   return (
     <div style={{ background: COLORS.cream, minHeight: '100vh' }}>
@@ -127,16 +148,28 @@ export default function DashboardLayout() {
               >
                 <User size={14} />
               </div>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.ink }}>{userName}</div>
-                <div style={{ fontSize: 11, color: COLORS.inkMute }}>Plano Spy</div>
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: COLORS.ink,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                  title={me?.name || ''}
+                >
+                  {userName}
+                </div>
+                <div style={{ fontSize: 11, color: COLORS.inkMute }}>{planLabel}</div>
               </div>
             </div>
           </div>
 
           <button
             type="button"
-            onClick={() => navigate('/spy')}
+            onClick={handleLogout}
             className="flex items-center justify-center transition-all"
             style={{
               gap: 8,
