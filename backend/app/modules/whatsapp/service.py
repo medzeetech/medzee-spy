@@ -244,6 +244,18 @@ class WhatsAppService:
             )
             raise
 
+        # Fallback de detecção de connect via polling. Roda em paralelo ao
+        # webhook: se webhook chega primeiro, o poll detecta o status já
+        # transicionado e sai cedo. Se webhook está quebrado (tier do uazapi
+        # com 5xx no /webhook), o poll é o ÚNICO caminho de disparar F1.
+        # Sem isso, o usuário escaneia o QR e nada acontece no backend.
+        asyncio.create_task(
+            self._poll_connection_fallback(
+                session_id, provider_session.session_token
+            ),
+            name=f"poll-connection-{session_id}",
+        )
+
         response = CreateSessionResponse(
             session_id=session_id,
             qr=provider_session.qr_base64,
@@ -255,10 +267,102 @@ class WhatsAppService:
                 "op": "create_session",
                 "session_id": str(session_id),
                 "status": SessionStatus.PENDING.value,
+                "webhook_ok": webhook_ok,
                 "elapsed_ms": int((time.monotonic() - started) * 1000),
             },
         )
         return response
+
+    # ------------------------------------------------------------------ #
+    # 1b. _poll_connection_fallback — webhook-independent connection detect #
+    # ------------------------------------------------------------------ #
+
+    async def _poll_connection_fallback(
+        self,
+        session_id: UUID,
+        session_token: str,
+        *,
+        poll_interval_s: float = 5.0,
+        max_wait_s: float = 600.0,
+    ) -> None:
+        """Polls uazapi ``/instance/status`` até detectar ``connected`` ou
+        até ``max_wait_s`` (default 10min — tempo razoável pro usuário
+        escanear o QR).
+
+        Idempotente em relação ao webhook:
+          - Se o webhook chegar primeiro, o store transita para CONNECTED.
+            O loop detecta ``state.status != PENDING`` e sai sem bater na
+            uazapi de novo.
+          - Se o webhook nunca chegar (tier com 5xx no /webhook), o loop
+            detecta o ``connected`` na uazapi e chama
+            :meth:`_handle_connection_event` com um payload sintético
+            (mesmo shape do webhook), reusando 100% do código de transição.
+
+        Tarefa é fire-and-forget. Erros transientes do uazapi são
+        silenciados e re-tentados no próximo tick.
+        """
+        elapsed = 0.0
+        ticks = 0
+        try:
+            while elapsed < max_wait_s:
+                state = await self._store.get(session_id)
+                if state is None:
+                    # Sessão sumiu (cancel manual, expiry). Para.
+                    return
+                if state.status != SessionStatus.PENDING:
+                    # Algo já transicionou — webhook chegou, ou expirou,
+                    # ou fail downstream. Não precisamos mais polar.
+                    logger.info(
+                        "service.poll_connection.exit_state_changed",
+                        extra={
+                            "op": "poll_connection",
+                            "session_id": str(session_id),
+                            "current_status": state.status.value,
+                            "ticks": ticks,
+                        },
+                    )
+                    return
+
+                try:
+                    payload = await self._provider.get_status(session_token)
+                except UazapiError:
+                    # Transient — próximo tick tenta de novo.
+                    await asyncio.sleep(poll_interval_s)
+                    elapsed += poll_interval_s
+                    ticks += 1
+                    continue
+
+                if _payload_says_connected(payload):
+                    logger.info(
+                        "service.poll_connection.detected_connected",
+                        extra={
+                            "op": "poll_connection",
+                            "session_id": str(session_id),
+                            "ticks": ticks,
+                            "elapsed_s": int(elapsed),
+                        },
+                    )
+                    await self._handle_connection_event(session_id, payload)
+                    return
+
+                await asyncio.sleep(poll_interval_s)
+                elapsed += poll_interval_s
+                ticks += 1
+
+            logger.warning(
+                "service.poll_connection.timeout",
+                extra={
+                    "op": "poll_connection",
+                    "session_id": str(session_id),
+                    "elapsed_s": int(elapsed),
+                    "max_wait_s": int(max_wait_s),
+                },
+            )
+        except Exception:  # pragma: no cover — defensive
+            logger.exception(
+                "service.poll_connection.unhandled",
+                extra={"op": "poll_connection", "session_id": str(session_id)},
+            )
 
     # ------------------------------------------------------------------ #
     # 2. handle_webhook_event                                            #
@@ -1101,6 +1205,34 @@ def _parse_uazapi_message(
         text=text,
         raw_message_id=str(raw_message_id) if raw_message_id is not None else None,
     )
+
+
+def _payload_says_connected(payload: Any) -> bool:
+    """Verdadeiro se o payload sinaliza conexão estabelecida.
+
+    Aceita o shape do webhook (``{'instance': {'status': 'connected'}}``) E
+    o shape do GET /instance/status quando os campos vêm flat. Usado pelo
+    poll fallback pra reusar :meth:`_handle_connection_event` sem precisar
+    sintetizar um payload — passamos o que veio direto.
+    """
+    if not isinstance(payload, dict):
+        return False
+    instance = payload.get("instance")
+    if isinstance(instance, dict):
+        status = str(instance.get("status") or "").lower()
+        if status == "connected":
+            return True
+    status = str(payload.get("status") or "").lower()
+    if status == "connected":
+        return True
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else None
+    if data:
+        status = str(data.get("status") or data.get("state") or "").lower()
+        if status in ("connected", "open"):
+            return True
+        if data.get("loggedIn") is True or data.get("logged_in") is True:
+            return True
+    return False
 
 
 __all__ = [
