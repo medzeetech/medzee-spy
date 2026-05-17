@@ -264,9 +264,16 @@ class WhatsAppService:
             )
             return
 
-        # uazapi uses event names like "connection", "messages.upsert", etc.
-        # We treat any event that carries connection-shaped data as a
-        # connection event — looking at both `event` field AND the data.
+        # uazapi (confirmed via captured payloads) sends connection webhooks
+        # with this shape:
+        #     {
+        #       "EventType": "connection",
+        #       "instance": {"name": "...", "status": "connected"|"disconnected"},
+        #       "instanceName": "...",
+        #       "owner": "5511XXXXXXXX",      # set when status=connected
+        #       "token": "...",
+        #       "type": "LoggedOut"           # present on logout
+        #     }
         is_connection_event = (
             "connection" in event.lower()
             or "connected" in event.lower()
@@ -281,21 +288,33 @@ class WhatsAppService:
             )
             return
 
-        # loggedIn can come in several flavours.
-        logged_in = (
-            data.get("loggedIn")
-            if data.get("loggedIn") is not None
-            else data.get("logged_in")
+        # Resolve loggedIn from any of the shapes we've seen.
+        instance_block = (
+            payload.get("instance") if isinstance(payload.get("instance"), dict) else {}
         )
-        if logged_in is None:
-            # Some uazapi events use `connected` / `connection` boolean.
-            logged_in = data.get("connected") or data.get("connection") == "open"
+        instance_status = str(instance_block.get("status") or "").lower()
+        type_field = str(payload.get("type") or "").lower()
+
+        if instance_status == "connected":
+            logged_in = True
+        elif instance_status == "disconnected" or type_field == "loggedout":
+            logged_in = False
+        else:
+            # Legacy fall-backs (older docs, other tiers).
+            logged_in = (
+                data.get("loggedIn")
+                if data.get("loggedIn") is not None
+                else data.get("logged_in")
+            )
+            if logged_in is None:
+                logged_in = data.get("connected") or data.get("connection") == "open"
 
         if logged_in is True:
-            # Defensive — uazapi may send jid as `jid`, `phone`, or nested
-            # inside `user`. Mask whatever string we find.
+            # uazapi puts the phone number in `owner` at the top level; fall
+            # back to legacy fields if the shape ever changes.
             jid_candidate = (
-                data.get("jid")
+                payload.get("owner")
+                or data.get("jid")
                 or data.get("phone")
                 or data.get("number")
                 or ""
