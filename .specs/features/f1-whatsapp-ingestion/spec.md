@@ -1,5 +1,7 @@
 # F1 — WhatsApp Ingestion
 
+> **Status: ✅ COMPLETE (2026-05-17)** — smoke ponta-a-ponta validado em Railway + Supabase real. Veja [ROADMAP.md](../../project/ROADMAP.md) e lições L1-L7 em [STATE.md](../../project/STATE.md).
+
 > Conectar o WhatsApp da clínica via QR Code (uazapi) e extrair o histórico dos últimos 30 dias, sem persistir conteúdo.
 
 ## Problem statement
@@ -96,25 +98,27 @@ Como sistema, quero garantir que toda sessão uazapi aberta seja encerrada após
 
 ## Requirement traceability
 
-| ID      | Story | Design | Task | Test | Status      |
-| ------- | ----- | ------ | ---- | ---- | ----------- |
-| WPP-01  | US-01 | —      | —    | —    | spec'd      |
-| WPP-02  | US-01 | —      | —    | —    | spec'd      |
-| WPP-03  | US-01 | —      | —    | —    | spec'd      |
-| WPP-04  | US-02 | —      | —    | —    | spec'd      |
-| WPP-05  | US-02 | —      | —    | —    | spec'd      |
-| WPP-06  | US-02 | —      | —    | —    | spec'd      |
-| WPP-07  | US-03 | —      | —    | —    | spec'd      |
-| WPP-08  | US-03 | —      | —    | —    | spec'd      |
-| WPP-09  | US-03 | —      | —    | —    | spec'd      |
-| WPP-10  | US-03 | —      | —    | —    | spec'd      |
-| WPP-11  | US-04 | —      | —    | —    | spec'd      |
-| WPP-12  | US-04 | —      | —    | —    | spec'd      |
-| WPP-13  | US-04 | —      | —    | —    | spec'd (N/A) |
-| WPP-14  | US-05 | —      | —    | —    | spec'd (P2) |
-| WPP-15  | US-05 | —      | —    | —    | spec'd (P2) |
-| WPP-16  | US-06 | —      | —    | —    | spec'd (P2) |
-| WPP-17  | US-07 | —      | —    | —    | spec'd (P3) |
+Legend: ✅ done · 🟨 done + caveat · ⏸ deferred · N/A not applicable
+
+| ID      | Story | Implementation | Test | Status |
+| ------- | ----- | -------------- | ---- | ------ |
+| WPP-01  | US-01 | `service.create_session` + `UazapiProvider.create_session` (chains `/instance/create` admin + `/instance/connect`) | `test_uazapi_adapter::test_create_session_happy_path`, `test_service::test_create_session_happy`, `test_routes::test_post_sessions_happy` | ✅ |
+| WPP-02  | US-01 | `routes.create_session` maps `UazapiError`/`UazapiUnavailable`/`UazapiTimeout` → 503 | `test_routes::test_post_sessions_503_uazapi_unavailable` | ✅ |
+| WPP-03  | US-01 | `service.create_session` calls `repo.create` then `store.create`; webhook registered via `provider.register_webhook` | `test_service::test_create_session_happy` | ✅ |
+| WPP-04  | US-02 | SSE `routes.session_events` + `state.SessionStore.subscribe` (broadcast pub/sub) | `test_routes::test_get_events_streams_replay_last_then_terminal` | ✅ |
+| WPP-05  | US-02 | `provider.refresh_qr` available; frontend handles via SSE `qr-updated` event | (no smoke yet — uazapi free QRs lasted long enough) | 🟨 (covered in code, not smoke-tested) |
+| WPP-06  | US-02 | `service.handle_webhook_event` reads `instance.status == "connected"` and `owner` → masks via `mask_phone` → publishes `connected` SSE | smoke 2026-05-17: webhook arrived, frontend transitioned | ✅ |
+| WPP-07  | US-03 | `service.handle_webhook_event` `asyncio.create_task(_run_extract)` after publishing `connected` | smoke 2026-05-17 (worker started; failed downstream on uazapi 500) | ✅ trigger / 🟨 pipeline blocked by B3 |
+| WPP-08  | US-03 | `extract_30d_pipeline` filters `m.type=='text'`; adapter normalizes Baileys type aliases | `test_extract::test_filters_non_text_messages` | ✅ |
+| WPP-09  | US-03 | `extract_30d_pipeline` paginates with cutoff_ts, publishes `extracted` event, calls `repo.mark_extracted` | `test_extract::test_extracts_only_30d_messages`, `test_extract::test_empty_clinic_extracted_with_count_zero` | ✅ |
+| WPP-10  | US-03 | adapter + worker logs only counts/op/elapsed_ms; payload never serialized into log message | code review + `test_extract` does not log payload | ✅ |
+| WPP-11  | US-04 | `service._release_provider_slot` calls `provider.delete_instance` (DELETE /instance) after consume/extract/cancel | smoke 2026-05-17: `delete_instance status=200` after failure path | ✅ |
+| WPP-12  | US-04 | `routes.create_session` error mapping; `extract._fail` publishes `failed` SSE with `code` | `test_routes::test_post_sessions_502_banned`, smoke: chat/find 500 → code=uazapi_unavailable | ✅ |
+| WPP-13  | US-04 | uazapi handles auth state — nothing for us to clean | — | N/A |
+| WPP-14  | US-05 | `state.SessionStore.subscribe` replays `last_event` to new subscribers | `test_routes::test_get_events_streams_replay_last_then_terminal` | ✅ |
+| WPP-15  | US-05 | subscribe closes immediately when status is terminal | `test_state::test_subscribe_closes_on_terminal` | ✅ |
+| WPP-16  | US-06 | `service._enforce_rate_limit` with monotonic clock + per-IP bucket | `test_service::test_rate_limit_blocks_4th_attempt`, `test_service::test_rate_limit_window_expires` | ✅ |
+| WPP-17  | US-07 | (P3 deferred — métricas operacionais) | — | ⏸ |
 
 ## Open questions
 

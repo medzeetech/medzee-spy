@@ -1,35 +1,42 @@
 # F1 — WhatsApp Ingestion · Tasks
 
+> **Status: ✅ ALL WAVES COMPLETE (2026-05-17)** — vide [ROADMAP.md](../../project/ROADMAP.md). Smoke ponta-a-ponta validado.
+
 > Quebra atômica do [design.md](design.md) em 15 tasks. Cada uma vira (idealmente) 1 commit. Tags `[P]` marcam tasks que podem rodar em paralelo via sub-agents.
 
 ## Pré-flight (já feito)
 
 - ✓ Branch `feat/f1-whatsapp-ingestion` criada e pushada
 - ✓ `.env` (backend + frontend) preenchidos
-- ✓ Migration `f1_1_medzee_schema_and_whatsapp_sessions` aplicada no Supabase News
-- ✓ Migration `f1_2_harden_set_updated_at_search_path` aplicada (hardening)
+- ✓ Migrations `f1_1`..`f1_5` aplicadas no Supabase News (schema `medzee_spy.whatsapp_sessions`)
 
-## Ordem de entrega (waves)
+## Ordem de entrega (waves) — todas concluídas
 
 ```
-Wave 1 (fundação, sequencial)
-  T1 → T2
+✅ Wave 1 (fundação, sequencial)            commit b1efae4
+   T1 → T2
 
-Wave 2 (camadas independentes — paralelizáveis)
-  T3 [P]  T4 [P]  T5 [P]  T6 [P]  T13 [P scaffold]
+✅ Wave 2 (camadas independentes)           commit b1efae4 (+ c9f2f23 tests)
+   T3 [P]  T4 [P]  T5 [P]  T6 [P]  T13 [P scaffold]
 
-Wave 3 (orquestração)
-  T7 → T8
+✅ Wave 3 (orquestração)                    commit 381094c
+   T7 → T8
 
-Wave 4 (endpoints — paralelizáveis após T7)
-  T9 [P]  T10 [P]  T11 [P]
+✅ Wave 4 (endpoints)                       commit 1b27f55
+   T9 [P]  T10 [P]  T11 [P]
 
-Wave 5 (wiring + smoke)
-  T12
+✅ Wave 5 (wiring + smoke)                  commit 2191622
+   T12
 
-Wave 6 (testes — paralelizáveis)
-  T14 [P]  T15 [P]
+✅ Wave 6 (testes)                          commit c9f2f23
+   T14 [P]  T15 [P]
+
+✅ Pós-Wave: F1.3 cleanup (DELETE /instance)  commits 618f2d1 + d064f46
+✅ Pós-Wave: F4-preview QRScreen wired         commit 03002d8
+✅ Pós-Wave: Railway deploy + bug fixes        commits da27eef, f4cfb7c, b71d934, c9fc812, d2f0671, 52fda62, 6507105, 734e66f, fc6a2b1, 6a7e0aa
 ```
+
+**Resultado:** 56/56 testes passando. Smoke real validado em Railway + Supabase + uazapi free + WhatsApp celular.
 
 ---
 

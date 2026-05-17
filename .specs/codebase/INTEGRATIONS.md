@@ -33,26 +33,47 @@ Substitui a ideia descartada de sidecar Node + Baileys. Toda integração com Wh
 
 | Método | Path | Quando | Notas |
 |---|---|---|---|
-| `POST` | `/instance/create` | F1 — ao iniciar sessão | header `admintoken`; retorna `{ token, instance }` |
-| `POST` | `/instance/connect` | F1 — após `create` | header `token` (instance_token); retorna `{ qrcode: base64_png, paircode? }` |
+| `POST` | `/instance/create` | F1 — ao iniciar sessão | header `admintoken`; **body exige `name`** (L6 em STATE) — usamos `medzee-spy-<8hex>`; retorna `{ token, instance: {...} }` |
+| `POST` | `/instance/connect` | F1 — após `create` | header `token` (instance_token); retorna `{ qrcode: base64_png, paircode? }`. **Free tier prefixa com `data:image/png;base64,`** — adapter strip antes de retornar |
 | `GET`  | `/instance/status` | F1 — fallback / health-check | retorna `{ connected, loggedIn, jid }` |
-| `POST` | `/webhook` | F1 — após `create` | registra URL + eventos `['connection','messages']` por instância |
-| `POST` | `/chat/find` | F1 — extração | lista chats (filtros: `wa_isGroup`, `wa_archived`, etc.) |
+| `POST` | `/webhook` | F1 — após `create` | registra URL + eventos por instância |
+| `POST` | `/chat/find` | F1 — extração | lista chats. ⚠ Free tier devolve **500 logo após `connected`** (B3 em STATE) — aguardar history sync interno |
 | `POST` | `/message/find` | F1 — extração | paginado por chat: `{ chatid, limit, offset }` → `{ messages, hasMore, nextOffset }` |
-| `POST` | `/instance/disconnect` | F1 — cleanup pós-extract | encerra a sessão no WhatsApp |
+| `POST` | `/instance/disconnect` | F1 — cleanup | encerra a sessão no WhatsApp (mantém instância) |
+| **`DELETE`** | **`/instance`** | F1 — cleanup completo | header `token` (instance_token), sem ID na URL. Disconnect + remove + libera slot. **`POST /instance/reset` NÃO faz isso** (L7 em STATE) |
 | `GET`  | `/instance/wa_messages_limits` | F1 — opcional (telemetria) | mostra `provider_code: 463` se atingiu cap |
+| `GET`  | `/instance/all` | F1 — orphan cleanup script | header `admintoken`. **Free tier: 401 "endpoint disabled"** — só funciona em paid tier |
 
-**Webhook (callback da uazapi → nosso backend):**
-- URL registrada: `<API_BASE_URL>/api/whatsapp/webhook?session_id=<uuid>` (assinatura `x-signature` se uazapi enviar).
-- Eventos consumidos:
-  - `connection` — transições `pending → connected → disconnected`. Disparamos a extração quando `loggedIn=true`.
-  - `messages` — mensagens em fluxo (não usadas em M1; usamos só o snapshot de 30d via `message/find`).
+**Webhook (callback da uazapi → nosso backend):** wire format real (capturado em smoke 2026-05-17):
+
+```json
+{
+  "EventType": "connection",
+  "instance": {
+    "name": "medzee-spy-<8hex>",
+    "status": "connected" | "disconnected",
+    "lastDisconnect": "<iso8601>",                  // só em disconnected
+    "lastDisconnectReason": "401: logged out…"      // só em disconnected
+  },
+  "instanceName": "medzee-spy-<8hex>",
+  "owner": "5511XXXXXXXXX",                          // msisdn quando connected
+  "token": "<36 chars>",
+  "type": "LoggedOut"                                // só em desconexão por outro device
+}
+```
+
+**Observações importantes (L4 em STATE):**
+- O campo discriminador é `EventType` (camelCase, **não** `event` lowercase).
+- O status fica em `instance.status` (nested), **não** em um `loggedIn` top-level.
+- O JID está em `owner`, **não** em `data.user.id`.
+- Não há `data` aninhado — o body é flat. O parser do service trata isso com fallbacks defensivos.
+- URL registrada por sessão: `<API_BASE_URL>/api/whatsapp/webhook?session_id=<uuid>`.
 - Backend responde 2xx em ≤ 5s sempre (delega processamento para task assíncrona).
 
 **Política:**
 - Sidecar/sessão **não persiste em nossa infra** — uazapi gerencia o auth state.
-- Persistimos apenas `medzee_whatsapp_sessions.uazapi_token` (vinculado ao usuário pós-signup) e metadados de status. Conteúdo de mensagem nunca é gravado (D4).
-- Encerrar a sessão com `disconnect` assim que o payload é consumido por F2 (signup) ou após o TTL de cache (15min).
+- Persistimos apenas `medzee_spy.whatsapp_sessions.uazapi_token` (vinculado ao usuário pós-signup) e metadados de status. Conteúdo de mensagem nunca é gravado (D4).
+- Cleanup completo = `DELETE /instance` (libera slot). `POST /instance/disconnect` só desloga mas a entry continua no tenant.
 
 **Trade-offs e mitigações:**
 - **Vendor lock-in.** Mitigação: adapter `WhatsAppProvider` permite trocar provider sem reescrever rotas/serviços.

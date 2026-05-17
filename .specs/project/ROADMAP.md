@@ -1,7 +1,7 @@
 # Roadmap
 
 **Current Milestone:** M1 — Fluxo ponta a ponta funcional
-**Status:** In Progress
+**Status:** In Progress (F1 ✅ done, F2 next)
 
 ---
 
@@ -12,12 +12,17 @@
 
 ### Features
 
-**F1 — WhatsApp Ingestion** — IN PROGRESS
-- Sidecar Node.js com Baileys que expõe REST + WebSocket para o FastAPI
-- Geração de sessão por usuário e emissão do QR Code para o frontend
-- Detecção de leitura do QR e abertura da sessão
-- Extração de mensagens dos últimos 30 dias de todas as conversas
-- Cleanup da sessão após extração (descarte de tokens, sem persistência de conteúdo)
+**F1 — WhatsApp Ingestion** — ✅ COMPLETE (2026-05-17)
+- ~~Sidecar Node.js com Baileys~~ → trocado por uazapi.com SaaS (D1)
+- Geração de sessão via `POST /instance/create` + `/instance/connect` (admin token + per-instance token)
+- QR Code base64 PNG retornado direto pra `QRScreen.jsx`
+- SSE stream `GET /sessions/:id/events` publica `connected` via webhook callback
+- Cleanup automático via `DELETE /instance` libera slot do tier (F1.3)
+- Smoke ponta-a-ponta validado: scan → uazapi webhook → SSE → frontend transiciona pra `GeneratingScreen`
+- Extract pipeline pronto (paralelizado, com hard timeout); failing no free tier por timing do history sync da uazapi — addressed em F3 (ver B3 em STATE.md)
+- 56/56 testes verdes; 17 commits + 4 migrations Supabase
+
+**Commits-chave:** `aa173ef` (pivot uazapi), `b1efae4` (Wave 1+2 core), `381094c` (Wave 3 service+worker), `1b27f55` (routes), `2191622` (wiring), `c9f2f23` (tests), `da27eef` (Railway), `618f2d1`+`d064f46` (F1.3 delete), `03002d8` (QRScreen wire), `6a7e0aa` (webhook shape fix).
 
 **F2 — Auth & User Persistence** — PLANNED
 - Schema Supabase: tabelas `users_profile` e `reports` (prefixadas para coexistir com News)
