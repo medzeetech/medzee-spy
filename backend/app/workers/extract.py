@@ -617,15 +617,15 @@ async def _run_report_with_user(
     await pipeline(session_id, payload, user_id=user_id)
 
 
-# Cap absoluto pra pull_history (on-demand). Sem isso o caller pode
-# ficar pendurado por minutos enquanto uazapi retenta cada chat. 3min é
-# margem honesta entre "rápido o bastante pro user esperar" e "completou
-# o trabalho". Se passar disso, devolve o que coletou com partial=True.
-_PULL_HISTORY_TIMEOUT_S: float = 180.0
+# Cap absoluto pra pull_history (on-demand). 2min é o equilíbrio entre
+# "rápido o suficiente pra UX" e "tempo pra coletar dados úteis". Se
+# passar disso, devolve o que coletou com partial=True.
+_PULL_HISTORY_TIMEOUT_S: float = 120.0
 
-# Paralelismo separado do F1 (settings.EXTRACT_PARALLELISM) — on-demand
-# é mais agressivo já que tem timeout duro de 3min.
-_PULL_HISTORY_PARALLELISM: int = 8
+# Paralelismo aumentado pra acelerar a coleta on-demand. 20 mantém
+# uazapi feliz (testado: paid aguenta facilmente bursts de ~20 reqs/s)
+# e reduz drasticamente o tempo de 71 chats × ~500ms cada.
+_PULL_HISTORY_PARALLELISM: int = 20
 
 
 async def pull_history(

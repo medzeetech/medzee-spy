@@ -1,35 +1,44 @@
 import { Sparkles } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 
-// Hard cap pra fake progress. NÃO chega a 100% até o backend confirmar
-// `completed` (REPORT-19a). Curva ease-out até 80% nos primeiros 60s,
-// marca-passo até 95% até 90s, depois trava em 95%.
-function fakeProgress(elapsedMs) {
-  const t = Math.min(elapsedMs / 60_000, 1);
-  const phase1 = 80 * (1 - Math.pow(1 - t, 3));
-  if (elapsedMs < 60_000) return phase1;
-  const extra = Math.min((elapsedMs - 60_000) / 30_000, 1) * 15;
-  return 80 + extra;
-}
+// Fases reais do pipeline mapeadas em tempo aproximado. Cada fase tem
+// janela de progresso (% início → % fim) baseada em medições do backend:
+//
+//   0-25s    | 0-22%  | "Coletando histórico do WhatsApp..."  (pull_history /chat/find + paginação)
+//   25-70s   | 22-55% | "Lendo conversas e mensagens..."      (per-chat /message/find paralelo)
+//   70-110s  | 55-78% | "Mapeando funil e padrões..."         (compute_funnel, sample_conversations)
+//   110-145s | 78-92% | "IA analisando insights..."           (LLM call)
+//   145s+    | 92-98% | "Finalizando..."                       (persist + retry budget)
+//
+// Cap em 98% até o backend devolver status='completed'. Não chega a 100%
+// pra evitar mostrar conclusão antes de hora.
 
-function messageFor(elapsedMs) {
-  if (elapsedMs < 15_000) {
-    return 'Analisando suas conversas dos últimos 30 dias…';
+const PHASES = [
+  { until: 25_000, msg: 'Coletando histórico do WhatsApp…', from: 0, to: 22 },
+  { until: 70_000, msg: 'Lendo conversas e mensagens…', from: 22, to: 55 },
+  { until: 110_000, msg: 'Mapeando funil e padrões…', from: 55, to: 78 },
+  { until: 145_000, msg: 'IA analisando insights…', from: 78, to: 92 },
+  { until: Infinity, msg: 'Finalizando o diagnóstico…', from: 92, to: 98 },
+];
+
+function phaseFor(elapsedMs) {
+  let cursor = 0;
+  for (const p of PHASES) {
+    if (elapsedMs < p.until) {
+      const span = p.until - cursor;
+      const inPhaseMs = elapsedMs - cursor;
+      const ratio = Math.min(Math.max(inPhaseMs / span, 0), 1);
+      const pct = p.from + (p.to - p.from) * ratio;
+      return { msg: p.msg, pct };
+    }
+    cursor = p.until;
   }
-  if (elapsedMs < 45_000) {
-    return 'Identificando oportunidades e padrões de atendimento…';
-  }
-  if (elapsedMs < 90_000) {
-    return 'Quase lá — finalizando o diagnóstico…';
-  }
-  // Após 90s, mensagem tranquilizadora sem CTA — recarregar reinicia o
-  // pipeline e perde progresso. Polling no pano de fundo continua.
-  return 'Finalizando os últimos detalhes. Aguarde mais um instante.';
+  // Inalcançável (último PHASES.until=Infinity), mas defensivo:
+  return { msg: 'Finalizando o diagnóstico…', pct: 98 };
 }
 
 export default function ReportGeneratingState({ elapsedMs = 0 }) {
-  const pct = fakeProgress(elapsedMs);
-  const message = messageFor(elapsedMs);
+  const { msg: message, pct } = phaseFor(elapsedMs);
 
   return (
     <div
@@ -87,7 +96,7 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
             lineHeight: 1.2,
           }}
         >
-          Análise IA em curso
+          Gerando seu diagnóstico
         </h1>
 
         <div
@@ -145,7 +154,7 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
             fontWeight: 600,
           }}
         >
-          {Math.round(pct)}% concluído
+          {Math.round(pct)}% concluído · {Math.round(elapsedMs / 1000)}s
         </div>
       </div>
     </div>
