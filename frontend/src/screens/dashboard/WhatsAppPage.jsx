@@ -131,8 +131,58 @@ function ErrorCard() {
   );
 }
 
-function DisconnectedCard() {
+function DisconnectedCard({ dbStatus, lastSeenAt, messageCount, conversationCount }) {
   const navigate = useNavigate();
+  // 3 estados visuais distintos baseados no histórico do DB:
+  //   - dbStatus null: usuário nunca conectou (UX onboarding)
+  //   - dbStatus consumed/disconnected: já conectou, sessão terminou
+  //     (UX reconnect + mostra histórico)
+  //   - dbStatus failed/expired: erro na sessão anterior (UX honesto)
+  const ENDED = new Set(['consumed', 'disconnected', 'failed', 'expired']);
+  const hadSession = dbStatus && ENDED.has(dbStatus);
+
+  let title;
+  let body;
+  let ctaLabel;
+
+  if (hadSession) {
+    const when = formatRelative(lastSeenAt);
+    title = 'WhatsApp desconectado';
+    if (dbStatus === 'consumed') {
+      body = (
+        <>
+          Sua última sessão foi encerrada {when !== '—' ? <>({when})</> : ''}.
+          {messageCount > 0 && (
+            <>
+              {' '}Temos <strong>{messageCount.toLocaleString('pt-BR')}</strong> mensagens
+              de <strong>{conversationCount.toLocaleString('pt-BR')}</strong> conversas
+              guardadas do período anterior.
+            </>
+          )}
+          {' '}Reconecte pra continuar coletando.
+        </>
+      );
+    } else if (dbStatus === 'failed' || dbStatus === 'expired') {
+      body = (
+        <>
+          Sessão anterior {dbStatus === 'failed' ? 'falhou' : 'expirou'} {when !== '—' && <>({when})</>}.
+          Reconecte pra retomar.
+        </>
+      );
+    } else {
+      body = <>Sessão desconectada {when !== '—' && <>({when})</>}. Reconecte pra retomar a coleta.</>;
+    }
+    ctaLabel = 'Reconectar WhatsApp';
+  } else if (dbStatus === 'pending') {
+    title = 'Conexão em andamento';
+    body = <>Sua sessão está em <strong>pending</strong>. Termine o scan do QR Code pra finalizar.</>;
+    ctaLabel = 'Continuar conexão';
+  } else {
+    title = 'WhatsApp não conectado';
+    body = <>Conecte seu WhatsApp pra começar a coletar conversas pra análise.</>;
+    ctaLabel = 'Conectar WhatsApp';
+  }
+
   return (
     <div
       style={{
@@ -168,7 +218,7 @@ function DisconnectedCard() {
           letterSpacing: '-0.01em',
         }}
       >
-        WhatsApp não conectado
+        {title}
       </h2>
       <p
         style={{
@@ -176,10 +226,10 @@ function DisconnectedCard() {
           color: COLORS.inkSoft,
           lineHeight: 1.5,
           margin: '0 auto 22px',
-          maxWidth: 380,
+          maxWidth: 420,
         }}
       >
-        Conecte seu WhatsApp pra começar a coletar conversas pra análise.
+        {body}
       </p>
       <button
         type="button"
@@ -207,7 +257,7 @@ function DisconnectedCard() {
         }}
       >
         <Wifi size={16} />
-        Conectar WhatsApp
+        {ctaLabel}
       </button>
     </div>
   );
@@ -431,7 +481,14 @@ export default function WhatsAppPage() {
   } else if (error && !status) {
     content = <ErrorCard />;
   } else if (!status || !status.connected) {
-    content = <DisconnectedCard />;
+    content = (
+      <DisconnectedCard
+        dbStatus={status?.db_status ?? null}
+        lastSeenAt={status?.last_seen_at ?? null}
+        messageCount={status?.message_count ?? 0}
+        conversationCount={status?.conversation_count ?? 0}
+      />
+    );
   } else {
     content = (
       <ConnectedCard

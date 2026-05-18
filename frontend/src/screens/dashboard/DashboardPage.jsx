@@ -164,10 +164,30 @@ function LiveStatsRow({ chatCount, uazapiMessageCount, capturedCount }) {
   );
 }
 
-function EmptyState({ isConnected, chatCount, capturedCount }) {
-  // Texto inteligente baseado no estado da conexão (não força "/spy" /
-  // signup pra user já autenticado). Considera "conectado" se uazapi tem
-  // chats OU nosso DB diz connected — uazapi é a verdade ao vivo.
+function formatRelativeShort(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return 'agora há pouco';
+  const min = Math.floor(ms / 60_000);
+  if (min < 60) return `há ${min} minuto${min === 1 ? '' : 's'}`;
+  const h = Math.floor(ms / 3_600_000);
+  if (h < 24) return `há ${h} hora${h === 1 ? '' : 's'}`;
+  const d = Math.floor(ms / 86_400_000);
+  if (d < 30) return `há ${d} dia${d === 1 ? '' : 's'}`;
+  return new Date(iso).toLocaleDateString('pt-BR');
+}
+
+function EmptyState({ isConnected, chatCount, capturedCount, dbStatus, lastSeenAt }) {
+  // Diferentes UX baseadas no estado real do DB (não força "/spy" / signup
+  // pra user já autenticado). 4 cenários:
+  //   - isConnected = true → uazapi confirma conexão ativa
+  //   - dbStatus terminal (consumed/disconnected/failed/expired) → já
+  //     conectou antes, sessão terminou — oferece RECONECTAR + mostra
+  //     "última atividade em X" se houver
+  //   - dbStatus = pending → conectando em curso (rare empty state)
+  //   - dbStatus null → nunca conectou
+  const ENDED_STATUSES = new Set(['consumed', 'disconnected', 'failed', 'expired']);
+  const hasEndedSession = !isConnected && dbStatus && ENDED_STATUSES.has(dbStatus);
   let title;
   let body;
   let cta = null;
@@ -196,15 +216,40 @@ function EmptyState({ isConnected, chatCount, capturedCount }) {
       );
       cta = { label: 'Ver status da conexão', to: '/app/whatsapp' };
     }
+  } else if (hasEndedSession) {
+    const when = formatRelativeShort(lastSeenAt);
+    title = 'Sessão WhatsApp encerrada';
+    body = (
+      <>
+        Sua última conexão {when ? <>terminou <strong>{when}</strong></> : 'foi encerrada'}.
+        {capturedCount > 0 && (
+          <>
+            {' '}Temos <strong>{capturedCount.toLocaleString('pt-BR')}</strong> mensagens guardadas localmente
+            do período anterior.
+          </>
+        )}
+        {' '}Reconecte pra continuar coletando.
+      </>
+    );
+    cta = { label: 'Reconectar WhatsApp', to: '/app/connect' };
+  } else if (dbStatus === 'pending') {
+    title = 'Conectando ao WhatsApp…';
+    body = (
+      <>
+        Escaneie o QR Code em <strong>Conexão WhatsApp</strong> pra finalizar
+        a conexão.
+      </>
+    );
+    cta = { label: 'Continuar conexão', to: '/app/connect' };
   } else {
-    title = 'WhatsApp não conectado';
+    title = 'Conecte seu WhatsApp pra começar';
     body = (
       <>
         Conecte o WhatsApp da clínica em "Conexão WhatsApp" pra começar a
         coletar conversas. Depois, gere um relatório quando quiser.
       </>
     );
-    cta = { label: 'Ir para Conexão WhatsApp', to: '/app/whatsapp' };
+    cta = { label: 'Conectar WhatsApp', to: '/app/connect' };
   }
 
   return (
@@ -323,6 +368,8 @@ export default function DashboardPage() {
   const dbConnected = Boolean(waStatus?.connected);
   const uazapiConnected = chatCount > 0;
   const isConnected = dbConnected || uazapiConnected;
+  const dbStatus = waStatus?.db_status ?? null;
+  const lastSeenAt = waStatus?.last_seen_at ?? null;
 
   useEffect(() => {
     let alive = true;
@@ -413,6 +460,8 @@ export default function DashboardPage() {
           isConnected={isConnected}
           chatCount={chatCount}
           capturedCount={capturedCount}
+          dbStatus={dbStatus}
+          lastSeenAt={lastSeenAt}
         />
       </div>
     );

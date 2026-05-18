@@ -79,6 +79,19 @@ class WhatsappStatusResponse(BaseModel):
     message_count: int = 0
     conversation_count: int = 0  # distinct wa_chatid
     last_message_at: datetime | None = None
+    # Status real da row em `medzee_spy.whatsapp_sessions` (pending |
+    # connected | extracting | extracted | consumed | failed | expired |
+    # disconnected). Frontend usa pra diferenciar 3 estados que pareciam
+    # iguais antes:
+    #   - null: usuário nunca conectou WhatsApp
+    #   - consumed/disconnected/failed/expired: já conectou antes mas
+    #     sessão terminou — UX deve oferecer "Reconectar"
+    #   - connected/extracting/extracted: WhatsApp ativo
+    #   - pending: scan QR em andamento
+    db_status: str | None = None
+    # ISO timestamp da última atualização da row. Usado pra exibir
+    # "última conexão em X" quando user tem histórico mas não está ativo.
+    last_seen_at: datetime | None = None
 
 
 class GenerateReportRequest(BaseModel):

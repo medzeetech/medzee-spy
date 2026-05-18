@@ -445,6 +445,8 @@ async def whatsapp_status(
             message_count=stats["message_count"],
             conversation_count=stats["conversation_count"],
             last_message_at=stats["last_message_at"],
+            db_status=db_status or None,
+            last_seen_at=session.get("updated_at") or session.get("connected_at"),
         )
     )
 
