@@ -20,6 +20,7 @@ from app.clients.whatsapp.errors import (
     UazapiBanned,
     UazapiQrExpired,
     UazapiTimeout,
+    UazapiUnauthorized,
     UazapiUnavailable,
     UazapiUnknown,
 )
@@ -38,7 +39,14 @@ _PROVIDER_CODE_BANNED = 463
 # retry budget ≈ 220s. 4xx propagates immediately (not transient). Only
 # applied to the heavy data-pulling ops (list_chats / list_messages) —
 # create/connect/delete stay on a single attempt.
-_RETRY_DELAYS_S: tuple[float, ...] = (15.0, 30.0, 60.0, 120.0, 180.0, 180.0)
+# Retry budget AJUSTADO pós-experiência F4-on-demand: o budget anterior
+# (15/30/60/120/180/180 = 585s) trava o usuário no spinner. Pro F1 auto-extract
+# o tempo é ok (background, não bloqueia UX), mas o /generate on-demand é
+# síncrono na percepção do usuário. Compromisso: (5/10/30/60) = 105s — cobre
+# blips transitórios + 1 ciclo de uazapi history sync, mas falha rápido
+# quando uazapi tá realmente off. pull_history aplica timeout absoluto de
+# 3min em cima disso pra garantir UX.
+_RETRY_DELAYS_S: tuple[float, ...] = (5.0, 10.0, 30.0, 60.0)
 
 
 async def _retry_5xx(
@@ -434,6 +442,14 @@ class UazapiProvider:
                     token_tail,
                 )
                 raise UazapiQrExpired(f"qr expired ({status})")
+            if status == 401:
+                logger.info(
+                    "uazapi op=%s status=%d token=...%s err=UazapiUnauthorized",
+                    op,
+                    status,
+                    token_tail,
+                )
+                raise UazapiUnauthorized(f"token invalid ({status})")
             snippet = response.text[:500] if response.text else f"http {status}"
             logger.info(
                 "uazapi op=%s status=%d token=...%s err=UazapiUnknown",

@@ -617,6 +617,17 @@ async def _run_report_with_user(
     await pipeline(session_id, payload, user_id=user_id)
 
 
+# Cap absoluto pra pull_history (on-demand). Sem isso o caller pode
+# ficar pendurado por minutos enquanto uazapi retenta cada chat. 3min é
+# margem honesta entre "rápido o bastante pro user esperar" e "completou
+# o trabalho". Se passar disso, devolve o que coletou com partial=True.
+_PULL_HISTORY_TIMEOUT_S: float = 180.0
+
+# Paralelismo separado do F1 (settings.EXTRACT_PARALLELISM) — on-demand
+# é mais agressivo já que tem timeout duro de 3min.
+_PULL_HISTORY_PARALLELISM: int = 8
+
+
 async def pull_history(
     provider, session_token: str, *, days_window: int
 ) -> ExtractedPayload:
@@ -629,81 +640,121 @@ async def pull_history(
     uazapi). O caller (``reports.service._build_and_run``) usa a payload
     devolvida pra dispatch do worker F3 normalmente.
 
-    Sem retry/SSE/progresso: roda em background do request, demora o que
-    demorar (uazapi paid responde rápido o suficiente — testes empíricos
-    300-500ms por /message/find). Se falhar a meio, retorna o que conseguiu
-    com ``partial=True``.
+    UX-driven:
+      - **paralelismo** com Semaphore(8) — 71 chats não viram fila linear
+      - **timeout absoluto** de 3min — caller não fica pendurado pra sempre
+      - **partial=True** quando timeout — retorna o que coletou em vez de
+        propagar exception, gera relatório parcial sobre o que conseguimos
+
+    Chats que falham individualmente (5xx persistente, etc) são contados
+    como partial=True mas o resto continua.
     """
     cutoff_ts = int(
         (datetime.now(timezone.utc) - timedelta(days=days_window)).timestamp()
     )
 
-    # Listar todos os chats
-    chats: list[Chat] = []
-    offset = 0
-    while True:
-        page, has_more = await provider.list_chats(
-            session_token, limit=_PAGE_SIZE, offset=offset
-        )
-        chats.extend(page)
-        if not has_more:
-            break
-        offset += _PAGE_SIZE
-
+    # Buffer compartilhado — populado conforme cada task termina. Cobre
+    # também o caso de timeout: as tasks que já terminaram já depositaram
+    # resultados aqui antes do timeout disparar.
     conversations: list[ConversationPayload] = []
     partial = False
-    for chat in chats:
-        try:
-            msgs: list[MessagePayload] = []
-            msg_offset = 0
-            while True:
-                page, has_more, next_offset = await provider.list_messages(
-                    session_token,
-                    chat.wa_chatid,
-                    limit=_PAGE_SIZE,
-                    offset=msg_offset,
-                )
-                old_found = False
-                for m in page:
-                    if m.ts < cutoff_ts:
-                        old_found = True
-                        break
-                    # Aceita qualquer mensagem com texto — não só type=="text".
-                    # Caption de imagem (type="image") com texto é signal comercial
-                    # legítimo (cliente perguntando preço sobre foto, etc). Áudio /
-                    # sticker / video sem caption ficam de fora porque m.text vem
-                    # vazio neles.
-                    if m.text:
-                        msgs.append(
-                            MessagePayload(
-                                ts=m.ts,
-                                from_me=m.from_me,
-                                type=m.type,
-                                text=m.text,
+    chats: list[Chat] = []
+
+    async def _do_extract() -> None:
+        nonlocal partial, chats
+        # Lista todos os chats (sequencial, porque é só 1-2 páginas no normal).
+        offset = 0
+        while True:
+            page, has_more = await provider.list_chats(
+                session_token, limit=_PAGE_SIZE, offset=offset
+            )
+            chats.extend(page)
+            if not has_more:
+                break
+            offset += _PAGE_SIZE
+
+        sem = asyncio.Semaphore(_PULL_HISTORY_PARALLELISM)
+
+        async def _extract_chat(chat: Chat) -> None:
+            nonlocal partial
+            async with sem:
+                try:
+                    msgs: list[MessagePayload] = []
+                    msg_offset = 0
+                    while True:
+                        page, has_more, next_offset = await provider.list_messages(
+                            session_token,
+                            chat.wa_chatid,
+                            limit=_PAGE_SIZE,
+                            offset=msg_offset,
+                        )
+                        old_found = False
+                        for m in page:
+                            if m.ts < cutoff_ts:
+                                old_found = True
+                                break
+                            if m.text:
+                                msgs.append(
+                                    MessagePayload(
+                                        ts=m.ts,
+                                        from_me=m.from_me,
+                                        type=m.type,
+                                        text=m.text,
+                                    )
+                                )
+                        if old_found or not has_more:
+                            break
+                        msg_offset = next_offset
+
+                    if msgs:
+                        conversations.append(
+                            ConversationPayload(
+                                wa_chatid=chat.wa_chatid,
+                                contact_name=chat.contact_name,
+                                is_group=chat.is_group,
+                                last_message_at=chat.last_message_at,
+                                messages=msgs,
                             )
                         )
-                if old_found or not has_more:
-                    break
-                msg_offset = next_offset
-
-            if msgs:
-                conversations.append(
-                    ConversationPayload(
-                        wa_chatid=chat.wa_chatid,
-                        contact_name=chat.contact_name,
-                        is_group=chat.is_group,
-                        last_message_at=chat.last_message_at,
-                        messages=msgs,
+                except Exception:
+                    partial = True
+                    logger.warning(
+                        "pull_history: chat failed (ignored)",
+                        extra={"op": "pull_history", "chatid": chat.wa_chatid},
+                        exc_info=True,
                     )
-                )
-        except Exception:
-            # Não interrompe a coleta toda por um chat ruim — log e segue.
-            partial = True
-            logger.warning(
-                "pull_history: chat failed (ignored)",
-                extra={"op": "pull_history", "chatid": chat.wa_chatid},
-                exc_info=True,
-            )
+
+        tasks = [asyncio.create_task(_extract_chat(c)) for c in chats]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            # Timeout/cancel propagou — cancela siblings pra não martelar
+            # uazapi depois que já desistimos.
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            for t in tasks:
+                try:
+                    await t
+                except BaseException:
+                    pass
+            raise
+
+    try:
+        async with asyncio.timeout(_PULL_HISTORY_TIMEOUT_S):
+            await _do_extract()
+    except asyncio.TimeoutError:
+        partial = True
+        logger.warning(
+            "pull_history: hard timeout — returning partial",
+            extra={
+                "op": "pull_history",
+                "days_window": days_window,
+                "chat_count": len(chats),
+                "collected_so_far": len(conversations),
+                "timeout_s": int(_PULL_HISTORY_TIMEOUT_S),
+            },
+        )
 
     payload = ExtractedPayload(
         message_count=sum(len(c.messages) for c in conversations),

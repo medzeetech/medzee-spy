@@ -35,6 +35,18 @@ class UazapiQrExpired(UazapiError):
     code = "qr_expired"
 
 
+class UazapiUnauthorized(UazapiError):
+    """HTTP 401 — token foi rotacionado/invalidado pela uazapi.
+
+    Diferente de UazapiUnavailable (5xx, transitório que vale tentar de novo),
+    401 é terminal: o token nunca mais vai funcionar. Callers que dependem do
+    token (poll loops, extract pipelines) devem abortar imediatamente em vez
+    de gastar retry budget.
+    """
+
+    code = "token_invalid"
+
+
 class UazapiUnknown(UazapiError):
     """4xx not otherwise classified."""
 

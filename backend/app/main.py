@@ -80,36 +80,70 @@ async def lifespan(app: FastAPI):
     # ainda em 'pending' no DB. Sem isso, qualquer redeploy do backend mata
     # a poll task em memória — usuário escaneia QR depois e nada acontece
     # (webhook quebrado + poll perdido = travado em 'pending' eterno).
+    #
+    # PRÉ-VALIDAÇÃO de token: antes de respawnar o poll, dá um get_status
+    # rápido. Se vier 401 (token rotacionado pela uazapi), marca a row como
+    # failed e PULA. Sem isso, polls zumbis ficam martelando 401 por
+    # max_wait_s (10min) e gastam quota — foi o problema observado em
+    # produção (logs do paid mostraram 5+min de 401 em loop).
     try:
+        from app.clients.whatsapp import get_provider
+        from app.clients.whatsapp.errors import UazapiUnauthorized
         from app.modules.whatsapp import repository as whatsapp_repo
-        from app.modules.whatsapp.schemas import SessionStatus
         from app.modules.whatsapp.service import get_service
         from uuid import UUID
 
         pending_rows = await whatsapp_repo.find_pending()
         if pending_rows:
             svc = get_service()
+            provider = get_provider()
+            respawned = 0
+            invalidated = 0
             for row in pending_rows:
                 row_id = UUID(str(row["id"]))
                 token = row.get("uazapi_token")
                 if not token:
+                    try:
+                        await whatsapp_repo.mark_failed(row_id, "no_token")
+                    except Exception:
+                        pass
+                    invalidated += 1
                     continue
+
+                # Pré-validação rápida: dispara get_status, se vier 401
+                # marca failed direto e pula. Outras exceções tratamos como
+                # transient e respawnamos o poll normalmente (ele tem retry).
+                try:
+                    await provider.get_status(token)
+                except UazapiUnauthorized:
+                    try:
+                        await whatsapp_repo.mark_failed(row_id, "token_invalid")
+                    except Exception:
+                        pass
+                    invalidated += 1
+                    continue
+                except Exception:
+                    # Transient — vale respawnar e o poll cuida.
+                    pass
+
                 user_id_raw = row.get("user_id")
                 row_user_id = UUID(str(user_id_raw)) if user_id_raw else None
-                # Restaura a sessão no store em-memória pra o poll achar
-                # state.status == PENDING e operar normalmente.
                 await session_store.create(
                     row_id,
                     uazapi_token=token,
-                    qr_base64="",  # QR antigo já foi entregue; o store mantém o registro vivo só pra status tracking.
+                    qr_base64="",
                     user_id=row_user_id,
                 )
                 asyncio.create_task(
                     svc._poll_connection_fallback(row_id, token),
                     name=f"poll-connection-recovery-{row_id}",
                 )
+                respawned += 1
+
             logger.info(
-                "startup_recovery.poll_respawned count=%d",
+                "startup_recovery.complete respawned=%d invalidated=%d total=%d",
+                respawned,
+                invalidated,
                 len(pending_rows),
             )
     except Exception:

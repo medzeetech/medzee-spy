@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from app.clients.whatsapp import WhatsAppProvider, get_provider
-from app.clients.whatsapp.errors import UazapiError
+from app.clients.whatsapp.errors import UazapiError, UazapiUnauthorized
 from app.core.config import settings
 from app.modules.captured_messages.schemas import CapturedMessageInsert
 from app.modules.whatsapp import repository
@@ -325,10 +325,28 @@ class WhatsAppService:
 
                 try:
                     payload = await self._provider.get_status(session_token)
+                except UazapiUnauthorized:
+                    # Token rotacionado/morto pela uazapi — terminal. Polling
+                    # nunca mais vai dar verde. Marca a sessão como failed e
+                    # sai. Sem isso o loop fica em zumbi infinito martelando
+                    # 401 por max_wait_s minutos.
+                    logger.warning(
+                        "service.poll_connection.token_invalid_exit",
+                        extra={
+                            "op": "poll_connection",
+                            "session_id": str(session_id),
+                            "tick": ticks,
+                            "elapsed_s": int(elapsed),
+                        },
+                    )
+                    try:
+                        await self._safe_mark_failed(session_id, "token_invalid")
+                    except Exception:
+                        pass
+                    return
                 except UazapiError as exc:
                     # Transient — próximo tick tenta de novo. Log de classe
-                    # de erro pra distinguir 401 (token rotacionado, fim de
-                    # jogo) de 5xx transitório (que vale tentar de novo).
+                    # de erro pra distinguir 5xx transitório do 401 acima.
                     logger.info(
                         "service.poll_connection.tick_error",
                         extra={
