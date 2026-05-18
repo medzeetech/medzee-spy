@@ -203,18 +203,33 @@ export async function getReport(id) {
 }
 
 /**
- * Trigger an on-demand report over a user-chosen window.
- * F4-11 endpoint. Returns { report_id, status: 'generating' } on success.
+ * Trigger an on-demand report (F5 default: last-N msgs per chat).
+ * Returns { report_id, status: 'generating' } on success.
+ *
+ * Aceita várias chamadas:
+ *   generateReport()                       → mode=last_n_per_chat, n=30
+ *   generateReport({ n_per_chat: 50 })     → custom N
+ *   generateReport({ mode, n_per_chat, period_days }) → controle total
+ *
+ * F4 legacy compat: generateReport(30) (number) é interpretado como n_per_chat.
  *
  * Throws (via callApi) on:
- *   - 422 detail='not_enough_data' → frontend shows "Aguarde algumas conversas chegarem"
- *   - 429 detail='too_many_generations_retry_in_Xs' → frontend extrai X, mostra "Aguarde X segundos"
- *   - other → mostra erro genérico
+ *   - 429 detail='too_many_generations_retry_in_Xs' → extrai X e mostra "Aguarde X seg"
+ *   - other → erro genérico
+ *
+ * F5 removeu o 422 'not_enough_data' do backend — agora sempre dispara
+ * e o relatório sempre existe (insufficient é estado válido, não erro).
  */
-export async function generateReport(periodDays) {
+export async function generateReport(opts = {}) {
+  const params = typeof opts === 'number' ? { n_per_chat: opts } : opts;
+  const body = {
+    mode: params.mode || 'last_n_per_chat',
+    n_per_chat: params.n_per_chat ?? 30,
+  };
+  if (params.period_days) body.period_days = params.period_days;
   return callApi('/api/reports/generate', {
     method: 'POST',
     auth: true,
-    body: { period_days: periodDays },
+    body,
   });
 }

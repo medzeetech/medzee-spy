@@ -252,15 +252,11 @@ async def _inner(
     conversation_count = compute_conversation_count(payload)
     score = compute_score(message_count, response_time, funnel)
 
-    # SHORT-CIRCUIT: dados insuficientes. Não chama LLM (evita alucinação)
-    # e persiste um relatório "transparente" com diagnostic_summary explicando
-    # o porquê + arrays vazios. O frontend trata data_quality=insufficient
-    # exibindo empty state honesto em vez de números chutados.
-    #
-    # Critério: < 5 mensagens OU 0 conversas. Acima disso, mesmo que pouco,
-    # vale rodar o LLM porque ele tem instrução explícita pra dizer "sample
-    # pequena, conclusões qualitativas" (vide BASE_SYSTEM).
-    if message_count < 5 or conversation_count == 0:
+    # SHORT-CIRCUIT (F5 relaxado): só pula LLM se for EXATAMENTE 0 mensagens
+    # OU 0 conversas. Acima disso, mesmo 1 mensagem, vale rodar o LLM
+    # porque o prompt agora exige relatório útil mesmo em sample mínima
+    # (vide BASE_SYSTEM F5 update). Relatório SEMPRE existe pro user ver.
+    if message_count == 0 or conversation_count == 0:
         logger.info(
             "worker.report.insufficient_data_short_circuit",
             extra={
@@ -277,13 +273,13 @@ async def _inner(
             funnel=funnel,
         )
         diagnostic_summary = (
-            "Dados insuficientes para análise comercial. Nenhuma conversa com "
-            "texto suficiente foi capturada no período. Possíveis causas: "
-            "(1) WhatsApp recém-conectado — aguarde o histórico sincronizar; "
-            "(2) tier do provider não está entregando mensagens; "
-            "(3) janela escolhida não tem atividade real. Recomendação: "
-            "aguarde alguns minutos após conectar, verifique se o WhatsApp "
-            "está pareado em Configurações, e tente novamente."
+            "Nenhuma mensagem disponível para análise no momento. Possíveis "
+            "causas: (1) WhatsApp recém-conectado e o histórico ainda está "
+            "sincronizando; (2) o provider WhatsApp não entregou mensagens "
+            "neste momento; (3) sua conta WhatsApp não tem conversas com "
+            "texto recente. Recomendação: aguarde 1-2 minutos após conectar, "
+            "confirme que o WhatsApp está pareado em Configurações > "
+            "Dispositivos conectados, e clique em 'Gerar novamente'."
         )
         insufficient_payload = _compose(
             message_count=message_count,
@@ -523,6 +519,11 @@ def _compose(
         if "color" not in s and name in _SENTIMENT_COLOR:
             s = {**s, "color": _SENTIMENT_COLOR[name]}
         sentiment_items.append(SentimentSlice(**s))
+    # F5: scope_warning é opcional no schema do LLM — pode vir ausente
+    # ou null. Normaliza string vazia → None pra UI tratar uniformemente.
+    raw_scope = llm_dict.get("scope_warning")
+    scope_warning = raw_scope if (raw_scope and isinstance(raw_scope, str)) else None
+
     return ReportPayload(
         message_count=message_count,
         conversation_count=conversation_count,
@@ -530,6 +531,7 @@ def _compose(
         clinic_segment=clinic_segment,
         data_quality=data_quality,
         diagnostic_summary=llm_dict.get("diagnostic_summary", ""),
+        scope_warning=scope_warning,
         funnel=funnel,
         response_time_distribution=response_time,
         heatmap_periods=heatmap,

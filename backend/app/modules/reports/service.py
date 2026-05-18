@@ -69,19 +69,30 @@ class ReportService:
             items=items, total=total, page=page, page_size=page_size
         )
 
-    # ── F4-11..13: on-demand generation over captured_messages ────────
+    # ── F4-11..13 + F5: on-demand generation ──────────────────────────
 
     async def trigger_generate(
-        self, user_id: UUID, *, period_days: int
+        self,
+        user_id: UUID,
+        *,
+        mode: str = "last_n_per_chat",
+        n_per_chat: int = 30,
+        period_days: int = 30,
     ) -> UUID:
         """Create a generating-state report row and dispatch the worker.
 
         Returns the new ``report_id`` so the route can hand it back to the
         client (which then navigates to ``/app/reports/{id}`` and polls).
 
+        F5 (default): ``mode='last_n_per_chat'`` puxa as últimas
+        ``n_per_chat`` msgs de cada conversa. Sem janela temporal.
+        Funciona em qualquer tier uazapi.
+
+        F4 legacy: ``mode='window_days'`` mantém o filtro por
+        ``period_days``.
+
         Pre-conditions (enforced by the route layer):
             * user is authenticated
-            * captured_messages.stats_for_user(user_id) ≥ 10
             * rate limit check (1/min) passed
 
         Concurrency:
@@ -96,15 +107,19 @@ class ReportService:
             user_id=user_id,
             clinic_segment=clinic_segment,
         )
-        # Lembrar a janela escolhida pelo user pra exibir na lista.
+        # Lembrar o "tamanho" da coleta pra exibir na lista. Pro modo
+        # last_n_per_chat usamos n_per_chat; pro window_days usamos period_days.
+        sentinel_days = period_days if mode == "window_days" else n_per_chat
         try:
-            await repository.update_period_days(report_id, period_days)
+            await repository.update_period_days(report_id, sentinel_days)
         except Exception:
-            # Não-crítico: o relatório roda mesmo sem o period_days
-            # explícito (default 30). Log + segue.
             logger.warning(
                 "service.reports.update_period_days_failed",
-                extra={"report_id": str(report_id), "period_days": period_days},
+                extra={
+                    "report_id": str(report_id),
+                    "mode": mode,
+                    "sentinel_days": sentinel_days,
+                },
                 exc_info=True,
             )
 
@@ -114,6 +129,8 @@ class ReportService:
                 "op": "trigger_generate",
                 "user_id": str(user_id),
                 "report_id": str(report_id),
+                "mode": mode,
+                "n_per_chat": n_per_chat,
                 "period_days": period_days,
                 "clinic_segment": clinic_segment,
             },
@@ -123,6 +140,8 @@ class ReportService:
             _build_and_run(
                 report_id=report_id,
                 user_id=user_id,
+                mode=mode,
+                n_per_chat=n_per_chat,
                 period_days=period_days,
                 whatsapp_session_id=whatsapp_session_id,
             ),
@@ -176,60 +195,69 @@ async def _build_and_run(
     *,
     report_id: UUID,
     user_id: UUID,
-    period_days: int,
     whatsapp_session_id: UUID,
+    mode: str = "last_n_per_chat",
+    n_per_chat: int = 30,
+    period_days: int = 30,
 ) -> None:
-    """Read captured_messages within the window, build ExtractedPayload,
-    call ``generate_report_pipeline`` with the pre-created ``report_id``.
+    """Coleta msgs via modo escolhido, monta ExtractedPayload, chama
+    ``generate_report_pipeline``.
 
-    Errors here are best-effort: the worker has its own try/except that
-    marks the row as failed with a stable error_code.
+    F5 (default) — ``mode='last_n_per_chat'``: pega as últimas
+    ``n_per_chat`` mensagens de cada conversa. Hierarquia:
+        1. captured_messages.query_last_n_per_chat (snapshot local)
+        2. fallback uazapi.pull_last_n_per_chat (provider)
+        3. payload vazio → worker persiste insufficient (NÃO failed)
+
+    F4 legacy — ``mode='window_days'``: caminho anterior intacto.
+
+    Errors here are best-effort: o worker tem seu próprio try/except que
+    marca a row failed com error_code estável.
     """
     try:
         from app.modules.captured_messages import repository as captured_repo
         from app.workers.report import generate_report_pipeline
 
-        since = datetime.now(timezone.utc) - timedelta(days=period_days)
-        captured = await captured_repo.query_window_for_user(user_id, since=since)
-        payload = _build_extracted_payload(captured)
-        source = "captured_messages"
+        source = "unknown"
 
-        # Fallback uazapi: se a query local veio vazia (webhook não tá
-        # entregando 'messages' nesse tier), puxa o histórico direto via
-        # /chat/find + /message/find. Usa a mesma janela escolhida pelo
-        # user. Sem isso o usuário em tier com webhook quebrado nunca
-        # consegue gerar relatório on-demand.
-        if payload.message_count == 0:
-            logger.info(
-                "service.reports.captured_empty_fallback_uazapi",
-                extra={
-                    "report_id": str(report_id),
-                    "user_id": str(user_id),
-                    "period_days": period_days,
-                },
+        if mode == "last_n_per_chat":
+            # F5 path
+            captured = await captured_repo.query_last_n_per_chat(
+                user_id, n_per_chat=n_per_chat
             )
-            try:
-                from app.clients.whatsapp import get_provider
-                from app.modules.whatsapp import repository as whatsapp_repo
-                from app.workers.extract import pull_history
+            payload = _build_extracted_payload(captured)
+            source = "captured_last_n"
 
-                session = await whatsapp_repo.get_active_for_user(user_id)
-                if session and session.get("uazapi_token"):
-                    provider = get_provider()
-                    payload = await pull_history(
-                        provider,
-                        session["uazapi_token"],
-                        days_window=period_days,
-                    )
-                    source = "uazapi_history"
-            except Exception:
-                logger.warning(
-                    "service.reports.uazapi_fallback_failed",
+            if payload.message_count == 0:
+                logger.info(
+                    "service.reports.captured_empty_fallback_uazapi_last_n",
                     extra={
                         "report_id": str(report_id),
                         "user_id": str(user_id),
+                        "n_per_chat": n_per_chat,
                     },
-                    exc_info=True,
+                )
+                payload, source = await _try_uazapi_last_n(
+                    user_id, report_id, n_per_chat
+                )
+        else:
+            # F4 legacy path
+            since = datetime.now(timezone.utc) - timedelta(days=period_days)
+            captured = await captured_repo.query_window_for_user(user_id, since=since)
+            payload = _build_extracted_payload(captured)
+            source = "captured_window"
+
+            if payload.message_count == 0:
+                logger.info(
+                    "service.reports.captured_empty_fallback_uazapi_window",
+                    extra={
+                        "report_id": str(report_id),
+                        "user_id": str(user_id),
+                        "period_days": period_days,
+                    },
+                )
+                payload, source = await _try_uazapi_window(
+                    user_id, report_id, period_days
                 )
 
         logger.info(
@@ -237,10 +265,13 @@ async def _build_and_run(
             extra={
                 "report_id": str(report_id),
                 "user_id": str(user_id),
+                "mode": mode,
+                "n_per_chat": n_per_chat,
                 "period_days": period_days,
                 "messages": payload.message_count,
                 "conversations": payload.conversation_count,
                 "source": source,
+                "partial": payload.partial,
             },
         )
 
@@ -263,6 +294,84 @@ async def _build_and_run(
                 "service.reports.persist_failed_secondary",
                 extra={"report_id": str(report_id)},
             )
+
+
+async def _try_uazapi_last_n(
+    user_id: UUID, report_id: UUID, n_per_chat: int
+):
+    """Fallback F5: chama pull_last_n_per_chat se houver sessão ativa.
+
+    Devolve sempre `(payload, source_str)`. Em falha, payload vazio
+    com source='uazapi_last_n_failed'.
+    """
+    from app.modules.whatsapp.schemas import ExtractedPayload
+
+    try:
+        from app.clients.whatsapp import get_provider
+        from app.modules.whatsapp import repository as whatsapp_repo
+        from app.workers.extract import pull_last_n_per_chat
+
+        session = await whatsapp_repo.get_active_for_user(user_id)
+        if session and session.get("uazapi_token"):
+            provider = get_provider()
+            payload = await pull_last_n_per_chat(
+                provider,
+                session["uazapi_token"],
+                n_per_chat=n_per_chat,
+            )
+            return payload, "uazapi_last_n"
+    except Exception:
+        logger.warning(
+            "service.reports.uazapi_last_n_failed",
+            extra={"report_id": str(report_id), "user_id": str(user_id)},
+            exc_info=True,
+        )
+    return (
+        ExtractedPayload(
+            message_count=0,
+            conversation_count=0,
+            conversations=[],
+            partial=True,
+        ),
+        "uazapi_last_n_no_session",
+    )
+
+
+async def _try_uazapi_window(
+    user_id: UUID, report_id: UUID, period_days: int
+):
+    """Fallback F4 legacy: chama pull_history(days_window=N)."""
+    from app.modules.whatsapp.schemas import ExtractedPayload
+
+    try:
+        from app.clients.whatsapp import get_provider
+        from app.modules.whatsapp import repository as whatsapp_repo
+        from app.workers.extract import pull_history
+
+        session = await whatsapp_repo.get_active_for_user(user_id)
+        if session and session.get("uazapi_token"):
+            provider = get_provider()
+            payload = await pull_history(
+                provider,
+                session["uazapi_token"],
+                days_window=period_days,
+            )
+            return payload, "uazapi_history"
+    except Exception:
+        logger.warning(
+            "service.reports.uazapi_window_failed",
+            extra={"report_id": str(report_id), "user_id": str(user_id)},
+            exc_info=True,
+        )
+    return (
+        ExtractedPayload(
+            message_count=0,
+            conversation_count=0,
+            conversations=[],
+            partial=True,
+        ),
+        "uazapi_history_no_session",
+    )
 
 
 def _build_extracted_payload(

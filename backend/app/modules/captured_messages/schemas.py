@@ -26,8 +26,17 @@ MessageType = Literal[
 ]
 
 
-# Períodos permitidos pro relatório on-demand (F4-11).
+# Períodos permitidos pro relatório on-demand (F4-11, legado window_days).
 ReportPeriodDays = Literal[7, 15, 30, 60]
+
+# F5: estratégia de coleta. ``last_n_per_chat`` é o default novo —
+# pega as últimas N msgs de cada conversa, sem janela temporal. Funciona
+# em qualquer tier uazapi. ``window_days`` mantido pra compat.
+ReportMode = Literal["last_n_per_chat", "window_days"]
+
+# F5: valores permitidos pra n_per_chat. Limitado pra controlar custo LLM:
+# 30 chats × 50 msgs = 1.500 linhas no contexto, ainda confortável.
+ReportNPerChat = Literal[10, 20, 30, 50]
 
 
 # ─── Row models ─────────────────────────────────────────────────────
@@ -95,8 +104,17 @@ class WhatsappStatusResponse(BaseModel):
 
 
 class GenerateReportRequest(BaseModel):
-    """Body of ``POST /api/reports/generate`` (F4-11)."""
+    """Body of ``POST /api/reports/generate`` (F4-11 + F5).
 
+    Default novo (F5): ``mode='last_n_per_chat'``, ``n_per_chat=30``.
+    Funciona em qualquer tier uazapi e gera relatório sempre.
+
+    Compat: clientes antigos podem mandar só ``period_days=N``; nesse
+    caso o backend usa ``mode='window_days'`` automaticamente.
+    """
+
+    mode: ReportMode = "last_n_per_chat"
+    n_per_chat: ReportNPerChat = 30
     period_days: ReportPeriodDays = 30
 
 
@@ -115,4 +133,6 @@ __all__ = [
     "GenerateReportResponse",
     "MessageType",
     "ReportPeriodDays",
+    "ReportMode",
+    "ReportNPerChat",
 ]

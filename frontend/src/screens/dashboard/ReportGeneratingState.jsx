@@ -1,44 +1,93 @@
-import { Sparkles } from 'lucide-react';
+import { Sparkles, MessageCircle, Brain, Wifi } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
+import { useUazapiStats } from '../../lib/whatsapp.js';
 
-// Fases reais do pipeline mapeadas em tempo aproximado. Cada fase tem
-// janela de progresso (% início → % fim) baseada em medições do backend:
+// F5: 3 fases reais com observabilidade.
 //
-//   0-25s    | 0-22%  | "Coletando histórico do WhatsApp..."  (pull_history /chat/find + paginação)
-//   25-70s   | 22-55% | "Lendo conversas e mensagens..."      (per-chat /message/find paralelo)
-//   70-110s  | 55-78% | "Mapeando funil e padrões..."         (compute_funnel, sample_conversations)
-//   110-145s | 78-92% | "IA analisando insights..."           (LLM call)
-//   145s+    | 92-98% | "Finalizando..."                       (persist + retry budget)
+// Fase 1: COLETANDO        — uazapiStats.chat_count subindo
+//                            (provider listou as conversas)
+// Fase 2: SINCRONIZANDO    — chat_count > 0, message_count crescendo
+//                            (uazapi popula cache via history-sync)
+// Fase 3: IA ANALISANDO    — backend já recebeu payload, LLM rodando
+//                            (heurística temporal — uazapiStats não revela isso)
 //
-// Cap em 98% até o backend devolver status='completed'. Não chega a 100%
-// pra evitar mostrar conclusão antes de hora.
+// O elapsedMs vem do polling de /api/reports/{id}; se >= ~30s, presume
+// que o LLM está rodando (a coleta uazapi tem timeout absoluto de ~30s
+// no caminho feliz). Sem isso é só "coletando…".
 
-const PHASES = [
-  { until: 25_000, msg: 'Coletando histórico do WhatsApp…', from: 0, to: 22 },
-  { until: 70_000, msg: 'Lendo conversas e mensagens…', from: 22, to: 55 },
-  { until: 110_000, msg: 'Mapeando funil e padrões…', from: 55, to: 78 },
-  { until: 145_000, msg: 'IA analisando insights…', from: 78, to: 92 },
-  { until: Infinity, msg: 'Finalizando o diagnóstico…', from: 92, to: 98 },
-];
+const PHASE_PULL = 'pull';
+const PHASE_LLM = 'llm';
+const PHASE_FINALIZING = 'finalizing';
 
-function phaseFor(elapsedMs) {
-  let cursor = 0;
-  for (const p of PHASES) {
-    if (elapsedMs < p.until) {
-      const span = p.until - cursor;
-      const inPhaseMs = elapsedMs - cursor;
-      const ratio = Math.min(Math.max(inPhaseMs / span, 0), 1);
-      const pct = p.from + (p.to - p.from) * ratio;
-      return { msg: p.msg, pct };
-    }
-    cursor = p.until;
-  }
-  // Inalcançável (último PHASES.until=Infinity), mas defensivo:
-  return { msg: 'Finalizando o diagnóstico…', pct: 98 };
+function pickPhase(elapsedMs, hasData) {
+  if (elapsedMs < 30_000) return hasData ? PHASE_PULL : PHASE_PULL;
+  if (elapsedMs < 90_000) return PHASE_LLM;
+  return PHASE_FINALIZING;
+}
+
+function StatPill({ Icon, value, label, highlight }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '8px 12px',
+        borderRadius: 99,
+        background: highlight ? 'rgba(255,107,53,0.1)' : COLORS.sunken,
+        border: `1px solid ${highlight ? 'rgba(255,107,53,0.3)' : COLORS.hairline}`,
+        fontSize: 12.5,
+        fontWeight: 600,
+        color: highlight ? COLORS.orange : COLORS.inkSoft,
+      }}
+    >
+      <Icon size={13} />
+      <span style={{ color: highlight ? COLORS.orange : COLORS.ink, fontWeight: 700 }}>
+        {value}
+      </span>
+      <span>{label}</span>
+    </div>
+  );
 }
 
 export default function ReportGeneratingState({ elapsedMs = 0 }) {
-  const { msg: message, pct } = phaseFor(elapsedMs);
+  // Pola /api/whatsapp/uazapi-stats a cada 3s enquanto o relatório gera.
+  // Mostra contagens reais — chats listados + msgs sincronizadas.
+  const uazapiStats = useUazapiStats({ enabled: true, intervalMs: 3000 });
+  const chatCount = uazapiStats?.stats?.chat_count ?? 0;
+  const messageCount = uazapiStats?.stats?.message_count ?? 0;
+  const hasData = chatCount > 0 || messageCount > 0;
+
+  const phase = pickPhase(elapsedMs, hasData);
+
+  // Progresso aproximado: 0-30s = 0-50% (pull), 30-90s = 50-90% (LLM),
+  // 90s+ = 90-98% (finalizing). Cap em 98%.
+  let pct;
+  if (phase === PHASE_PULL) {
+    pct = Math.min(50, (elapsedMs / 30_000) * 50);
+  } else if (phase === PHASE_LLM) {
+    pct = 50 + Math.min(40, ((elapsedMs - 30_000) / 60_000) * 40);
+  } else {
+    pct = 90 + Math.min(8, ((elapsedMs - 90_000) / 60_000) * 8);
+  }
+  pct = Math.round(pct);
+
+  let headline;
+  let subline;
+  if (phase === PHASE_PULL) {
+    headline = hasData
+      ? 'Lendo suas conversas…'
+      : 'Conectando ao WhatsApp…';
+    subline = hasData
+      ? `Já vimos ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} no seu WhatsApp.`
+      : 'Buscando a lista de conversas no seu WhatsApp.';
+  } else if (phase === PHASE_LLM) {
+    headline = 'IA analisando o conteúdo…';
+    subline = `Cruzando ${messageCount.toLocaleString('pt-BR')} mensagens de ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} pra gerar insights.`;
+  } else {
+    headline = 'Finalizando seu diagnóstico…';
+    subline = 'Montando funil, oportunidades perdidas e benchmarks.';
+  }
 
   return (
     <div
@@ -57,7 +106,7 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
         style={{
           position: 'relative',
           width: '100%',
-          maxWidth: 480,
+          maxWidth: 520,
           background: COLORS.paper,
           border: `1px solid ${COLORS.hairline}`,
           borderRadius: 20,
@@ -92,38 +141,57 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
             letterSpacing: '-0.02em',
             color: COLORS.ink,
             margin: 0,
-            marginBottom: 12,
+            marginBottom: 10,
             lineHeight: 1.2,
           }}
         >
-          Gerando seu diagnóstico
+          {headline}
         </h1>
 
-        <div
-          className="flex items-center justify-center"
+        <p
           style={{
-            gap: 10,
-            margin: '0 auto 28px',
             color: COLORS.inkSoft,
-            fontSize: 14.5,
-            lineHeight: 1.5,
-            maxWidth: 400,
+            fontSize: 14,
+            lineHeight: 1.55,
+            margin: '0 auto 24px',
+            maxWidth: 440,
             minHeight: 44,
           }}
         >
-          <span
-            className="anim-pulse-dot"
+          {subline}
+        </p>
+
+        {/* Stats reais — só renderiza quando tem dados pra mostrar */}
+        {(chatCount > 0 || messageCount > 0) && (
+          <div
             style={{
-              width: 8,
-              height: 8,
-              borderRadius: 99,
-              background: COLORS.orange,
-              flexShrink: 0,
-              boxShadow: '0 0 10px rgba(255,107,53,0.5)',
+              display: 'flex',
+              gap: 10,
+              justifyContent: 'center',
+              flexWrap: 'wrap',
+              marginBottom: 24,
             }}
-          />
-          <span>{message}</span>
-        </div>
+          >
+            <StatPill
+              Icon={MessageCircle}
+              value={chatCount.toLocaleString('pt-BR')}
+              label={chatCount === 1 ? 'conversa' : 'conversas'}
+              highlight={phase === PHASE_PULL}
+            />
+            <StatPill
+              Icon={Wifi}
+              value={messageCount.toLocaleString('pt-BR')}
+              label="mensagens"
+              highlight={phase === PHASE_PULL}
+            />
+            <StatPill
+              Icon={Brain}
+              value={phase === PHASE_LLM || phase === PHASE_FINALIZING ? '✓' : '…'}
+              label="IA"
+              highlight={phase === PHASE_LLM || phase === PHASE_FINALIZING}
+            />
+          </div>
+        )}
 
         <div
           style={{
@@ -154,7 +222,7 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
             fontWeight: 600,
           }}
         >
-          {Math.round(pct)}% concluído · {Math.round(elapsedMs / 1000)}s
+          {pct}% · {Math.round(elapsedMs / 1000)}s
         </div>
       </div>
     </div>

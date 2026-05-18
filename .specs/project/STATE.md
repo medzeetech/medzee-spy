@@ -4,6 +4,15 @@
 
 ## Decisões
 
+- **D9 (2026-05-18 — F5 pivot) — Coleta por "últimas N mensagens de cada conversa" em vez de janela temporal.**
+  Por quê: empiricamente, uazapi paid não entrega histórico antigo via `cutoff_ts`. `/chat/find` lista conversas; `/message/history-sync` popula o cache; `/message/find` lê o que foi sincronizado — mas com sincronização limitada às últimas N mensagens por chat (não retroativa). Filtrar por dias descartava quase tudo. Estratégia nova: pedir as últimas N (default 30) de CADA conversa, sem janela temporal. Funciona em qualquer tier.
+  Como aplicar: pipeline `pull_last_n_per_chat(provider, token, *, n_per_chat=30)` em `app/workers/extract.py`. ReportService aceita `mode='last_n_per_chat'|'window_days'` (default last_n). Modal frontend mostra 10/20/30/50 msgs por conversa em vez de 7/15/30/60 dias.
+  Trade-offs aceitos: conversas longas (50+ trocas) ficam capadas em 30 msgs — amostra suficiente pra diagnóstico comercial, não pra auditoria forense. Custo LLM cresce com nº de chats (sample_conversations já tem budget Claude).
+
+- **D10 (2026-05-18 — F5) — Relatório SEMPRE gera; "fora-de-escopo" é informado via banner, não bloqueante.**
+  Por quê: o pipeline anterior tinha 3 portões que mataram a UX: (a) route 422 `not_enough_data` quando < 10 msgs; (b) worker short-circuit insufficient quando < 5 msgs OU 0 conversas; (c) prompt instruía "recuse se não for saúde". Resultado: user conectava WhatsApp, gerava 0 relatório, via tela vazia, abandonava. Pivot: relatório sempre dispara, prompt sempre devolve algo útil; quando segmento não é saúde, o LLM preenche `scope_warning` e o frontend mostra banner amarelo no topo — relatório existe nos dois casos.
+  Como aplicar: removido threshold rígido na route `/api/reports/generate`; worker short-circuit relaxado pra `message_count == 0`; `BASE_SYSTEM` reescrito com "SEMPRE gere o relatório"; novo campo `scope_warning: str|null` em `ReportPayload` + `LLM_TOOL_SCHEMA`; `ScopeWarningBanner` no `ReportDetailPage`.
+
 - **D1 (2026-05-17, revisada) — WhatsApp via uazapi.com (REST + webhook), abstraído em `WhatsAppProvider`.**
   Por quê: uazapi entrega QR como base64 PNG direto (`POST /instance/connect`), webhook nativo, gerencia o auth state internamente (sem sidecar Node/Baileys/Puppeteer), e oferece `/chat/find` + `/message/find` para o histórico.
   Como aplicar: `app/clients/whatsapp/__init__.py` com protocol `WhatsAppProvider` e adapter `uazapi.py`. Backend usa `UAZAPI_BASE_URL` e `UAZAPI_ADMIN_TOKEN`; cada sessão grava seu `uazapi_token` em `medzee_spy.whatsapp_sessions`.
@@ -137,6 +146,8 @@
 - [ ] (Opcional, pós-MVP) State persistence — hoje `SessionStore` é in-memory; redeploy do Railway perde sessões abertas. Considerar Redis ou rehidratação via DB no startup quando volume justificar.
 - [x] ~~F4 forward-capture implementado~~ — migration f4_1, captured_messages module, webhook event=messages, GET /whatsapp/status, POST /reports/generate, TTL job, frontend WhatsAppPage + GenerateReportModal. Suite 172/172. Smoke E2E pendente em uazapi paid (Wave 7 testes + smoke fecham F4).
 - [ ] **B2 follow-up** — habilitar leaked password protection no Supabase (1 clique no Dashboard) antes do F4 ir pra prod.
+- [x] ~~F5 last-N per chat + relatório sempre gera~~ — 2026-05-18. Spec/design/tasks em `.specs/features/f5-last-n-per-chat/`. Backend: `pull_last_n_per_chat`, `query_last_n_per_chat`, mode `last_n_per_chat`, threshold rígido removido, prompt reescrito, `scope_warning` no schema. Frontend: GenerateReportModal com 10/20/30/50 msgs, ReportGeneratingState com contagens reais via /uazapi-stats, ScopeWarningBanner no ReportDetailPage.
+- [ ] **F5 smoke E2E** — validar em uazapi paid: scan QR → gerar relatório → relatório aparece com >= 1 mensagem real OU com diagnostic_summary insufficient explícito. Sem mais "tela travada gerando".
 
 ## Ideias adiadas
 

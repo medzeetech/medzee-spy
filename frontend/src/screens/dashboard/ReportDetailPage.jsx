@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, RefreshCw, WifiOff } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Info, RefreshCw, WifiOff } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import { useReportPolling } from '../../lib/reports.js';
 import ReportGeneratingState from './ReportGeneratingState.jsx';
@@ -62,6 +62,28 @@ function PartialBanner() {
       <span>
         <em>análise baseada em parte das conversas (problema temporário de conexão com o WhatsApp)</em>
       </span>
+    </div>
+  );
+}
+
+function ScopeWarningBanner({ text }) {
+  return (
+    <div
+      className="flex items-start"
+      style={{
+        gap: 10,
+        padding: '14px 16px',
+        borderRadius: 12,
+        border: '1px solid rgba(232,179,60,0.45)',
+        background: 'rgba(232,179,60,0.12)',
+        color: COLORS.ink,
+        fontSize: 13.5,
+        lineHeight: 1.5,
+        marginBottom: 20,
+      }}
+    >
+      <Info size={16} style={{ color: COLORS.gold, flexShrink: 0, marginTop: 2 }} />
+      <span>{text}</span>
     </div>
   );
 }
@@ -206,6 +228,7 @@ function ReportContent({ partial, payload }) {
 
   return (
     <>
+      {p.scope_warning && <ScopeWarningBanner text={p.scope_warning} />}
       {partial && <PartialBanner />}
       {animatedChildren.map((child, i) => (
         <div

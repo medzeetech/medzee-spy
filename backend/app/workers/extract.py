@@ -814,4 +814,214 @@ async def pull_history(
     return payload
 
 
-__all__ = ["extract_30d_pipeline", "pull_history"]
+# ─── F5: pull_last_n_per_chat ──────────────────────────────────────────
+#
+# Por que existir além do pull_history(days_window): uazapi paid não
+# entrega histórico antigo via filtro de data. /chat/find devolve a lista
+# de chats; /message/history-sync popula o cache; /message/find lê o que
+# foi sincronizado. Filtrar por cutoff_ts descartava QUASE TUDO porque o
+# uazapi paid sincroniza só as últimas N msgs do chat — sem retroatividade.
+#
+# Mudança fundamental: pedimos as últimas N msgs de cada chat (sem janela
+# temporal). Funciona em qualquer tier; dá relatório SEMPRE que existir
+# pelo menos 1 chat com mensagem de texto.
+
+
+_LAST_N_HARD_TIMEOUT_S: float = 120.0
+_LAST_N_PARALLELISM: int = 20
+
+
+async def pull_last_n_per_chat(
+    provider, session_token: str, *, n_per_chat: int = 30
+) -> ExtractedPayload:
+    """Puxa as últimas ``n_per_chat`` mensagens de CADA conversa.
+
+    Diferente de :func:`pull_history`: SEM cutoff por dias. Sem paginação
+    por chat (single page = últimas N msgs já vêm sorted desc). Para cada
+    chat retornado por ``/chat/find``, dispara ``/message/history-sync``
+    pra forçar o uazapi a popular o cache, espera ~6s, e lê
+    ``/message/find limit=n_per_chat``.
+
+    Estratégia validada empiricamente: o tier paid recusa entregar
+    histórico antigo via filtro temporal, mas devolve as últimas N msgs
+    consistentemente.
+
+    Args:
+        n_per_chat: 1..100. Default 30 — equilíbrio entre cobertura
+                    comercial (suficiente pra capturar negociação) e
+                    custo LLM (30 chats × 30 msgs ≈ 900 linhas).
+
+    Returns:
+        ExtractedPayload(partial=False) em sucesso completo;
+        ExtractedPayload(partial=True) se timeout absoluto ou falhas
+        individuais por chat.
+    """
+    n_per_chat = max(1, min(int(n_per_chat), 100))
+
+    conversations: list[ConversationPayload] = []
+    partial = False
+    chats: list[Chat] = []
+
+    async def _do_extract() -> None:
+        nonlocal partial, chats
+
+        # 1. Lista todos os chats (1-2 páginas no normal).
+        offset = 0
+        while True:
+            page, has_more = await provider.list_chats(
+                session_token, limit=_PAGE_SIZE, offset=offset
+            )
+            chats.extend(page)
+            if not has_more:
+                break
+            offset += _PAGE_SIZE
+
+        logger.info(
+            "pull_last_n.chats_listed",
+            extra={
+                "op": "pull_last_n_per_chat",
+                "chat_count": len(chats),
+                "n_per_chat": n_per_chat,
+            },
+        )
+
+        if not chats:
+            return
+
+        # 2. history-sync em paralelo — força uazapi a popular cache.
+        sem_sync = asyncio.Semaphore(_LAST_N_PARALLELISM)
+
+        async def _sync_one(chat: Chat) -> None:
+            async with sem_sync:
+                try:
+                    await provider.request_history_sync(
+                        session_token, chat.wa_chatid, count=n_per_chat
+                    )
+                except Exception:
+                    logger.warning(
+                        "pull_last_n.history_sync_failed",
+                        extra={"op": "pull_last_n_per_chat", "chatid": chat.wa_chatid},
+                        exc_info=True,
+                    )
+
+        sync_tasks = [asyncio.create_task(_sync_one(c)) for c in chats]
+        try:
+            await asyncio.gather(*sync_tasks)
+        except Exception:
+            pass
+        # Pausa pra cache popular — 6s é o sweet spot observado em paid.
+        await asyncio.sleep(6.0)
+
+        # 3. Lê as últimas N msgs por chat (single page).
+        sem_read = asyncio.Semaphore(_LAST_N_PARALLELISM)
+        per_chat_counts: list[int] = []
+
+        async def _read_one(chat: Chat) -> None:
+            nonlocal partial
+            async with sem_read:
+                try:
+                    page, _has_more, _next = await provider.list_messages(
+                        session_token,
+                        chat.wa_chatid,
+                        limit=n_per_chat,
+                        offset=0,
+                    )
+                    # SEM filtro de cutoff_ts — F5 quer as últimas N.
+                    msgs = [
+                        MessagePayload(
+                            ts=m.ts,
+                            from_me=m.from_me,
+                            type=m.type,
+                            text=m.text,
+                        )
+                        for m in page
+                        if m.text  # descarta áudio/sticker sem texto
+                    ]
+                    per_chat_counts.append(len(msgs))
+                    if msgs:
+                        conversations.append(
+                            ConversationPayload(
+                                wa_chatid=chat.wa_chatid,
+                                contact_name=chat.contact_name,
+                                is_group=chat.is_group,
+                                last_message_at=chat.last_message_at,
+                                messages=sorted(msgs, key=lambda x: x.ts),
+                            )
+                        )
+                except Exception:
+                    partial = True
+                    per_chat_counts.append(0)
+                    logger.warning(
+                        "pull_last_n.read_failed",
+                        extra={"op": "pull_last_n_per_chat", "chatid": chat.wa_chatid},
+                        exc_info=True,
+                    )
+
+        read_tasks = [asyncio.create_task(_read_one(c)) for c in chats]
+        try:
+            await asyncio.gather(*read_tasks)
+        except BaseException:
+            for t in read_tasks:
+                if not t.done():
+                    t.cancel()
+            for t in read_tasks:
+                try:
+                    await t
+                except BaseException:
+                    pass
+            raise
+
+        # Observabilidade: distribuição de msgs/chat (sem PII).
+        if per_chat_counts:
+            non_empty = [c for c in per_chat_counts if c > 0]
+            logger.info(
+                "pull_last_n.read_done",
+                extra={
+                    "op": "pull_last_n_per_chat",
+                    "chat_count": len(chats),
+                    "chats_with_msgs": len(non_empty),
+                    "chats_empty": len(per_chat_counts) - len(non_empty),
+                    "total_msgs": sum(per_chat_counts),
+                    "avg_msgs_per_chat_nonempty": (
+                        sum(non_empty) / len(non_empty) if non_empty else 0
+                    ),
+                },
+            )
+
+    try:
+        async with asyncio.timeout(_LAST_N_HARD_TIMEOUT_S):
+            await _do_extract()
+    except asyncio.TimeoutError:
+        partial = True
+        logger.warning(
+            "pull_last_n.hard_timeout",
+            extra={
+                "op": "pull_last_n_per_chat",
+                "n_per_chat": n_per_chat,
+                "chat_count": len(chats),
+                "collected_so_far": len(conversations),
+                "timeout_s": int(_LAST_N_HARD_TIMEOUT_S),
+            },
+        )
+
+    payload = ExtractedPayload(
+        message_count=sum(len(c.messages) for c in conversations),
+        conversation_count=len(conversations),
+        conversations=conversations,
+        partial=partial,
+    )
+    logger.info(
+        "pull_last_n.done",
+        extra={
+            "op": "pull_last_n_per_chat",
+            "n_per_chat": n_per_chat,
+            "chat_count": len(chats),
+            "conversation_count": payload.conversation_count,
+            "message_count": payload.message_count,
+            "partial": partial,
+        },
+    )
+    return payload
+
+
+__all__ = ["extract_30d_pipeline", "pull_history", "pull_last_n_per_chat"]

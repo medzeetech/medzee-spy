@@ -223,6 +223,64 @@ def _compute_stats(rows: list[dict]) -> dict[str, Any]:
     }
 
 
+async def query_last_n_per_chat(
+    user_id: UUID, *, n_per_chat: int = 30
+) -> list[CapturedMessage]:
+    """Retorna as últimas ``n_per_chat`` mensagens de cada conversa do user.
+
+    Sem janela temporal. Estratégia equivalente ao F5 pipeline
+    (:func:`app.workers.extract.pull_last_n_per_chat`) — útil quando o
+    webhook está funcionando e o cache local já tem mensagens.
+
+    Implementação: lê tudo do user (snapshot pode crescer, mas no MVP é
+    pequeno) e faz top-N por wa_chatid em Python. Em produção com alto
+    volume virar window function PostgreSQL.
+
+    Returns:
+        Lista plana de :class:`CapturedMessage`, ordenada por
+        (wa_chatid asc, ts asc) — pronta pra agrupar no serviço.
+    """
+    n_per_chat = max(1, min(int(n_per_chat), 100))
+
+    def _run() -> Any:
+        # Limita por user_id; sem cutoff temporal. Ordena por (wa_chatid, ts desc)
+        # pra pegar fácil os últimos N por chat.
+        return (
+            _table()
+            .select("*")
+            .eq("user_id", str(user_id))
+            .order("wa_chatid", desc=False)
+            .order("ts", desc=True)
+            .execute()
+        )
+
+    result = await asyncio.to_thread(_run)
+    raw_rows: list[dict] = getattr(result, "data", None) or []
+
+    # Top-N por wa_chatid mantendo ordem desc (mais recente primeiro).
+    seen_per_chat: dict[str, int] = {}
+    kept: list[dict] = []
+    for row in raw_rows:
+        chatid = row.get("wa_chatid") or ""
+        current = seen_per_chat.get(chatid, 0)
+        if current < n_per_chat:
+            kept.append(row)
+            seen_per_chat[chatid] = current + 1
+
+    parsed = [CapturedMessage.model_validate(row) for row in kept]
+    logger.info(
+        "repo.captured.query_last_n_per_chat",
+        extra={
+            "user_id": str(user_id),
+            "n_per_chat": n_per_chat,
+            "total_rows_scanned": len(raw_rows),
+            "kept_after_topN": len(parsed),
+            "conversation_count": len(seen_per_chat),
+        },
+    )
+    return parsed
+
+
 async def stats_for_user(user_id: UUID) -> dict:
     """Return aggregate stats over **all** captured messages for a user.
 
@@ -310,6 +368,7 @@ async def delete_for_session(session_id: UUID) -> int:
 __all__ = [
     "insert_many",
     "query_window_for_user",
+    "query_last_n_per_chat",
     "stats_for_user",
     "stats_for_session",
     "delete_for_session",

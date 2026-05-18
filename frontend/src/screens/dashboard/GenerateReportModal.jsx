@@ -1,31 +1,31 @@
-// F4-T14 — GenerateReportModal.
+// F5 — GenerateReportModal.
 //
-// Opens from ReportsListPage's "Gerar relatório" button. User picks a window
-// (7/15/30/60d) and the modal dispatches POST /api/reports/generate via the
-// shipped `generateReport` helper.
+// Mudança vs F4: o filtro mudou de "janela temporal (7/15/30/60 dias)" pra
+// "últimas N mensagens de cada conversa" — estratégia que funciona em
+// qualquer tier uazapi (não depende do provider sincronizar histórico
+// antigo). N controla cobertura comercial vs custo LLM.
 //
 // Error surface:
-//   - 422 detail='not_enough_data' → friendly "wait for more messages"
 //   - 429 detail='too_many_generations_retry_in_Xs' → extract X, show countdown
 //   - other → generic "try again"
+// (F5: 422 'not_enough_data' não existe mais — relatório sempre dispara)
 //
-// On success, the parent navigates to /app/reports/{id} (where the polling
-// detail page from F3 takes over).
+// On success, o parent navega pra /app/reports/{id} (polling F3 toma conta).
 
 import { useState } from 'react';
-import { Zap, Calendar, X, Loader2 } from 'lucide-react';
+import { Zap, MessageCircle, X, Loader2 } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import { generateReport } from '../../lib/reports.js';
 
-const PERIODS = [
-  { value: 7, label: 'Últimos 7 dias' },
-  { value: 15, label: 'Últimos 15 dias' },
-  { value: 30, label: 'Últimos 30 dias' },
-  { value: 60, label: 'Últimos 60 dias' },
+const N_OPTIONS = [
+  { value: 10, label: '10 msgs por conversa', hint: 'Visão rápida' },
+  { value: 20, label: '20 msgs por conversa', hint: 'Boa amostra' },
+  { value: 30, label: '30 msgs por conversa', hint: 'Recomendado' },
+  { value: 50, label: '50 msgs por conversa', hint: 'Análise profunda' },
 ];
 
 export default function GenerateReportModal({ open, onClose, onSuccess }) {
-  const [period, setPeriod] = useState(30);
+  const [nPerChat, setNPerChat] = useState(30);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -35,14 +35,10 @@ export default function GenerateReportModal({ open, onClose, onSuccess }) {
     setSubmitting(true);
     setError(null);
     try {
-      const result = await generateReport(period);
+      const result = await generateReport({ n_per_chat: nPerChat });
       onSuccess(result.report_id);
     } catch (e) {
-      if (e.status === 422 && e.detail === 'not_enough_data') {
-        setError(
-          'Aguarde algumas conversas chegarem antes de gerar (mínimo: 10 mensagens).',
-        );
-      } else if (e.status === 429) {
+      if (e.status === 429) {
         const match = /retry_in_(\d+)s/.exec(e.detail || '');
         const secs = match ? match[1] : '60';
         setError(`Aguarde ${secs} segundos entre relatórios.`);
@@ -113,7 +109,7 @@ export default function GenerateReportModal({ open, onClose, onSuccess }) {
                 Gerar relatório
               </div>
               <div style={{ fontSize: 12, color: COLORS.inkMute }}>
-                Escolha o período de análise
+                Últimas mensagens de cada conversa
               </div>
             </div>
           </div>
@@ -140,22 +136,39 @@ export default function GenerateReportModal({ open, onClose, onSuccess }) {
           </button>
         </div>
 
-        {/* Period selector */}
+        {/* Explainer */}
+        <div
+          style={{
+            fontSize: 12.5,
+            color: COLORS.inkSoft,
+            lineHeight: 1.5,
+            marginBottom: 14,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: COLORS.sunken,
+          }}
+        >
+          A análise lê as <strong>últimas N mensagens</strong> de cada conversa
+          do seu WhatsApp. Mais mensagens = análise mais profunda + tempo um
+          pouco maior.
+        </div>
+
+        {/* N-per-chat selector */}
         <div
           className="flex flex-col"
           style={{ gap: 8, marginBottom: 20 }}
           role="radiogroup"
-          aria-label="Período de análise"
+          aria-label="Mensagens por conversa"
         >
-          {PERIODS.map((opt) => {
-            const isSelected = period === opt.value;
+          {N_OPTIONS.map((opt) => {
+            const isSelected = nPerChat === opt.value;
             return (
               <button
                 key={opt.value}
                 type="button"
                 role="radio"
                 aria-checked={isSelected}
-                onClick={() => setPeriod(opt.value)}
+                onClick={() => setNPerChat(opt.value)}
                 disabled={submitting}
                 className="flex items-center transition-all"
                 style={{
@@ -203,14 +216,23 @@ export default function GenerateReportModal({ open, onClose, onSuccess }) {
                     />
                   )}
                 </span>
-                <Calendar
+                <MessageCircle
                   size={14}
                   style={{
                     color: isSelected ? COLORS.orange : COLORS.inkMute,
                     flexShrink: 0,
                   }}
                 />
-                <span>{opt.label}</span>
+                <span style={{ flex: 1 }}>{opt.label}</span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: isSelected ? COLORS.orange : COLORS.inkMute,
+                    fontWeight: 500,
+                  }}
+                >
+                  {opt.hint}
+                </span>
               </button>
             );
           })}

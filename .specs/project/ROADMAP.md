@@ -1,7 +1,7 @@
 # Roadmap
 
 **Current Milestone:** M1 — Fluxo ponta a ponta funcional
-**Status:** In Progress (F1 ✅ deprecated · F2 ✅ done · F3 ✅ code done · F4 🟡 code done, smoke pendente · F5 not started)
+**Status:** In Progress (F1 ✅ deprecated · F2 ✅ done · F3 ✅ code done · F4 ✅ code done · F5 🟡 code done, smoke pendente · F6/F7 not started)
 
 ---
 
@@ -62,11 +62,21 @@ F1 extract. F4 destrava — quando F4 smoke passar, F3 fecha junto.
 
 **Commits-chave:** `abb01aa` (specs), `689e797` (Wave 1: migration + schemas + SessionStore.user_id), `0c0c68d` (Wave 2: repo + webhook handler + status endpoint + TTL + scaffold), `5a370f3` (Wave 3: worker adapter), `1dbdf34` (Wave 4: POST /generate), `7612d0e` (Wave 5: frontend).
 
-**F5 — DX & Docs** — PLANNED
+**F5 — Last-N per Chat & Always-Generates Report** — 🟡 CODE COMPLETE (2026-05-18, smoke pendente)
+- **Por quê**: F4 quase passou, mas três portões mataram a UX: threshold `min 10 msgs` na route, short-circuit `< 5 msgs` no worker, prompt instruindo "recuse se não é saúde". Resultado: user conecta WhatsApp → tela "gerando" → 0 relatório → abandona. F5 destrava removendo TODOS esses portões.
+- **Pull strategy nova** (`pull_last_n_per_chat`): em vez de filtrar por janela temporal (que uazapi paid recusa), pega as últimas N msgs de CADA conversa. Default 30. Funciona em qualquer tier.
+- **Relatório sempre gera**: route não bloqueia mais por volume; worker só pula LLM quando exatamente 0 mensagens; prompt reescrito pra produzir diagnóstico mesmo com sample mínima.
+- **`scope_warning` field**: quando segmento detectado != saúde/odonto, LLM preenche 1 sentença descrevendo o segmento real (ex: "Detectamos atendimento de pet shop"), frontend mostra banner amarelo acima do HeroCard, relatório existe mesmo assim.
+- **Observabilidade**: `ReportGeneratingState` (tela "gerando") agora pola `/api/whatsapp/uazapi-stats` a cada 3s e mostra "X conversas detectadas · Y mensagens lidas" em tempo real. Sem timer falso.
+- **Modal redesenhado**: `GenerateReportModal` troca 7/15/30/60 dias por 10/20/30/50 msgs por conversa.
+
+**Arquivos-chave:** specs em `.specs/features/f5-last-n-per-chat/`. Backend: `app/workers/extract.py` (+pull_last_n_per_chat), `app/modules/captured_messages/repository.py` (+query_last_n_per_chat), `app/modules/captured_messages/schemas.py` (ReportMode/ReportNPerChat), `app/modules/reports/{service,routes,schemas,prompts/*}.py`, `app/workers/report.py`. Frontend: `lib/reports.js`, `lib/whatsapp.js` (intervalMs override), `screens/dashboard/{GenerateReportModal,ReportGeneratingState,ReportDetailPage}.jsx`.
+
+**F6 — DX & Docs** — PLANNED
 - README com setup local (backend + frontend + sidecar) e `.env` documentado
 - Script único `make dev` ou `pnpm dev` que sobe os 3 serviços
 
-**F6 — Route guards (opcional)** — guard de rota autenticada em /app/*. Resíduo do plano original F4 "Frontend Integration" não absorvido por F2/F3. Pequeno (~30 min). Não bloqueia M1 mas vale fazer antes de prod pública.
+**F7 — Route guards (opcional)** — guard de rota autenticada em /app/*. Resíduo do plano original F4 "Frontend Integration" não absorvido por F2/F3. Pequeno (~30 min). Não bloqueia M1 mas vale fazer antes de prod pública.
 
 ---
 

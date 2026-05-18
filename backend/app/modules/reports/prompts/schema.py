@@ -16,6 +16,19 @@ LLM_TOOL_SCHEMA: dict = {
             "maxLength": 1500,
             "description": "3-5 sentences PT-BR, consultive tone, critical point first.",
         },
+        "scope_warning": {
+            "type": ["string", "null"],
+            "maxLength": 280,
+            "description": (
+                "Use null quando o WhatsApp É de clínica de saúde/odonto/estética OU "
+                "quando não consegue classificar. Quando detectar segmento NÃO-saúde "
+                "(pet shop, advogado, e-commerce, escola, etc.), preencha com 1 "
+                "sentença descrevendo o segmento detectado — ex: 'Detectamos "
+                "atendimento de pet shop. Nossa análise é otimizada para clínicas "
+                "de saúde, mas geramos um diagnóstico genérico do seu atendimento "
+                "comercial.'"
+            ),
+        },
         "opportunities": {
             "type": "array",
             "minItems": 0,

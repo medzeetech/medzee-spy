@@ -124,6 +124,11 @@ class ReportPayload(BaseModel):
     # LLM-generated diagnostic
     diagnostic_summary: str
 
+    # F5: avisa quando o LLM detectou que o WhatsApp NÃO é saúde/odonto.
+    # null = é saúde OU não foi classificado. String = 1 sentença com o
+    # segmento detectado pra exibir como banner amarelo no frontend.
+    scope_warning: str | None = None
+
     # Deterministic metrics
     funnel: list[FunnelStage]
     response_time_distribution: list[ResponseTimeBucket]

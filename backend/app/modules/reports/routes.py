@@ -129,21 +129,28 @@ async def list_reports(
 @router.post(
     "/generate",
     response_model=SuccessResponse[GenerateReportResponse],
-    summary="Trigger a new on-demand report over a user-chosen window",
+    summary="Trigger a new on-demand report (F5: last-N per chat by default)",
 )
 async def generate_report(
     req: GenerateReportRequest,
     user_id: UUID = Depends(get_current_user_id),
     service: ReportService = Depends(get_report_service),
 ) -> SuccessResponse[GenerateReportResponse]:
-    """Dispara um relatório novo on-demand (F4-11).
+    """Dispara um relatório novo on-demand.
+
+    F5 (default): ``mode='last_n_per_chat'``, ``n_per_chat=30``.
+    Pega as últimas N msgs de cada conversa, sem janela temporal.
+
+    F4 legacy: ``mode='window_days'`` mantém o filtro por dias.
 
     Pré-condições verificadas aqui (route layer):
     1. Rate limit: 1 generation por ``REPORTS_GENERATE_RATE_S`` segundos
        por user (default 60s). Excedeu → 429 ``too_many_generations_*``.
-    2. Volume mínimo: stats_for_user(user_id).message_count >= 10
-       (default override via ``REPORTS_GENERATE_MIN_MESSAGES``). Não atingiu
-       → 422 ``not_enough_data``.
+
+    Eliminado em F5: o threshold rígido "min 10 msgs" → bloqueava o user
+    sem deixar ele NEM TENTAR. Agora SEMPRE dispara — o worker decide se
+    a sample é suficiente e persiste ``data_quality=insufficient`` com
+    diagnóstico honesto quando não tiver dados. Relatório SEMPRE existe.
 
     Em sucesso retorna ``{report_id, status: 'generating'}`` imediato; o
     frontend navega pra ``/app/reports/{id}`` e polla até status terminal.
@@ -151,13 +158,7 @@ async def generate_report(
     # 1. Rate limit
     _check_rate_limit(user_id)
 
-    # 2. Min volume: bloqueia 422 só quando NEM captured_messages NEM
-    #    uazapi history podem fornecer dados. Hierarquia:
-    #      a) captured_messages >= _GENERATE_MIN_MESSAGES → libera direto.
-    #      b) captured < threshold MAS user tem sessão WhatsApp ativa
-    #         (connected/extracting/extracted) → libera porque o worker
-    #         vai puxar via fallback uazapi (extract.pull_history).
-    #      c) captured < threshold E sem sessão ativa → 422 not_enough_data.
+    # 2. Observabilidade — qual é o ponto de partida (snapshot local).
     try:
         from app.modules.captured_messages import repository as captured_repo
         stats = await captured_repo.stats_for_user(user_id)
@@ -167,49 +168,34 @@ async def generate_report(
             extra={"user_id": str(user_id)},
             exc_info=True,
         )
-        stats = {"message_count": 0}
+        stats = {"message_count": 0, "conversation_count": 0}
 
-    if stats.get("message_count", 0) < _GENERATE_MIN_MESSAGES:
-        # Confere se tem sessão WhatsApp ativa pra deixar o fallback rodar.
-        active_session = None
-        try:
-            from app.modules.whatsapp import repository as whatsapp_repo
-            active_session = await whatsapp_repo.get_active_for_user(user_id)
-        except Exception:
-            logger.warning(
-                "route.reports.generate.session_check_failed",
-                extra={"user_id": str(user_id)},
-                exc_info=True,
-            )
+    logger.info(
+        "route.reports.generate.snapshot",
+        extra={
+            "user_id": str(user_id),
+            "mode": req.mode,
+            "n_per_chat": req.n_per_chat,
+            "period_days": req.period_days,
+            "captured_message_count": stats.get("message_count", 0),
+            "captured_conversation_count": stats.get("conversation_count", 0),
+        },
+    )
 
-        has_active = (
-            active_session is not None
-            and active_session.get("status")
-            in ("connected", "extracting", "extracted")
-            and active_session.get("uazapi_token")
-        )
-        if not has_active:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="not_enough_data",
-            )
-        logger.info(
-            "route.reports.generate.allow_via_uazapi_fallback",
-            extra={
-                "user_id": str(user_id),
-                "captured_count": stats.get("message_count", 0),
-            },
-        )
-
-    # 3. Dispatch
+    # 3. Dispatch — SEM threshold rígido. Worker decide insufficient.
     report_id = await service.trigger_generate(
-        user_id, period_days=req.period_days
+        user_id,
+        mode=req.mode,
+        n_per_chat=req.n_per_chat,
+        period_days=req.period_days,
     )
     logger.info(
         "route.reports.generate.dispatched",
         extra={
             "user_id": str(user_id),
             "report_id": str(report_id),
+            "mode": req.mode,
+            "n_per_chat": req.n_per_chat,
             "period_days": req.period_days,
         },
     )

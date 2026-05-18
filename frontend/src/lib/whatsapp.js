@@ -25,8 +25,9 @@ import { callApi } from './api';
 const STATUS_POLL_MS = 30_000;
 const UAZAPI_POLL_MS = 60_000;
 
-function createPollingHook({ url, intervalMs, dataKey, includeLoading = true }) {
-  return function useResource({ enabled = true } = {}) {
+function createPollingHook({ url, intervalMs: defaultIntervalMs, dataKey, includeLoading = true }) {
+  return function useResource({ enabled = true, intervalMs } = {}) {
+    const effectiveInterval = intervalMs || defaultIntervalMs;
     const [state, setState] = useState({
       loading: includeLoading && enabled,
       [dataKey]: null,
@@ -47,7 +48,6 @@ function createPollingHook({ url, intervalMs, dataKey, includeLoading = true }) 
 
       const tick = async () => {
         if (typeof document !== 'undefined' && document.hidden) {
-          // Pausa enquanto a aba está oculta — retoma via visibilitychange.
           return;
         }
         try {
@@ -62,7 +62,7 @@ function createPollingHook({ url, intervalMs, dataKey, includeLoading = true }) 
             error: e.detail || `http_${e.status ?? 'unknown'}`,
           }));
         }
-        if (aliveRef.current) timer = setTimeout(tick, intervalMs);
+        if (aliveRef.current) timer = setTimeout(tick, effectiveInterval);
       };
 
       const handleVisibility = () => {
@@ -85,7 +85,7 @@ function createPollingHook({ url, intervalMs, dataKey, includeLoading = true }) 
           document.removeEventListener('visibilitychange', handleVisibility);
         }
       };
-    }, [enabled]);
+    }, [enabled, effectiveInterval]);
 
     return state;
   };
