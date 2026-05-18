@@ -362,6 +362,10 @@ async def whatsapp_status(
 
     session = await whatsapp_repo.get_active_for_user(user_id)
     if session is None:
+        logger.info(
+            "route.whatsapp_status.no_session",
+            extra={"op": "whatsapp_status", "user_id": str(user_id)},
+        )
         return SuccessResponse(data=WhatsappStatusResponse(connected=False))
 
     session_id = UUID(str(session["id"]))
@@ -372,9 +376,29 @@ async def whatsapp_status(
     # 'extracted', confundindo o usuário (o WhatsApp tá conectado no celular
     # dele, só o nosso pipeline tá processando).
     _ALIVE_STATUSES = {"connected", "extracting", "extracted"}
+    db_status = str(session.get("status") or "")
+    is_connected = db_status in _ALIVE_STATUSES
+
+    # Diagnóstico: SEMPRE loga o status final pra debug fácil sem SQL.
+    # Importante quando user diz "wpp conectado mas dashboard não mostra" —
+    # confere se é 'pending' (poll não detectou), 'failed' (algum 401),
+    # 'disconnected' (cleanup), ou se de fato é 'connected/extracting/extracted'.
+    logger.info(
+        "route.whatsapp_status.resolved",
+        extra={
+            "op": "whatsapp_status",
+            "user_id": str(user_id),
+            "session_id": str(session_id),
+            "db_status": db_status,
+            "is_connected": is_connected,
+            "captured_message_count": stats["message_count"],
+            "captured_conversation_count": stats["conversation_count"],
+            "connected_at": str(session.get("connected_at") or ""),
+        },
+    )
     return SuccessResponse(
         data=WhatsappStatusResponse(
-            connected=session.get("status") in _ALIVE_STATUSES,
+            connected=is_connected,
             session_id=session_id,
             connected_since=session.get("connected_at"),
             message_count=stats["message_count"],

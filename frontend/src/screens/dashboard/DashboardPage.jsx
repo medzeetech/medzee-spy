@@ -19,10 +19,11 @@ import {
 } from 'recharts';
 import {
   TrendingUp, TrendingDown, Clock, MessageCircle, Target, Users, FileText,
+  Wifi, Hash, Zap,
 } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import { listReports, getReport } from '../../lib/reports.js';
-import { useWhatsappStatus } from '../../lib/whatsapp.js';
+import { useWhatsappStatus, useUazapiStats } from '../../lib/whatsapp.js';
 
 const PT_MONTH_LABEL = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
@@ -93,32 +94,104 @@ function MetricCard({ label, value, unit, trend, positive, Icon, color }) {
   );
 }
 
-function EmptyState({ isConnected, messageCount }) {
+function LiveStatsRow({ chatCount, uazapiMessageCount, capturedCount }) {
+  // Card horizontal com as 3 contagens "ao vivo" — vem direto do uazapi
+  // /chat/find (não depende do nosso webhook). Mostra mesmo sem relatórios.
+  const cards = [
+    {
+      label: 'Conversas no WhatsApp',
+      value: chatCount.toLocaleString('pt-BR'),
+      Icon: MessageCircle,
+      color: COLORS.wa,
+    },
+    {
+      label: 'Mensagens não lidas',
+      value: uazapiMessageCount.toLocaleString('pt-BR'),
+      Icon: Hash,
+      color: COLORS.lavender,
+    },
+    {
+      label: 'Capturadas localmente',
+      value: capturedCount.toLocaleString('pt-BR'),
+      Icon: Wifi,
+      color: COLORS.orange,
+    },
+  ];
+  return (
+    <div className="flex flex-wrap" style={{ gap: 14, marginBottom: 14 }}>
+      {cards.map(({ label, value, Icon, color }) => (
+        <div
+          key={label}
+          style={{
+            background: COLORS.paper,
+            border: `1px solid ${COLORS.hairline}`,
+            borderRadius: 16,
+            padding: 20,
+            flex: '1 1 200px',
+          }}
+        >
+          <div className="flex items-center" style={{ gap: 10, marginBottom: 10 }}>
+            <div
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 10,
+                background: `${color}15`,
+                color,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Icon size={16} />
+            </div>
+            <div style={{ fontSize: 12, color: COLORS.inkMute, fontWeight: 600 }}>{label}</div>
+          </div>
+          <div
+            style={{
+              fontSize: 26,
+              fontWeight: 800,
+              color: COLORS.ink,
+              letterSpacing: '-0.02em',
+              lineHeight: 1,
+            }}
+          >
+            {value}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EmptyState({ isConnected, chatCount, capturedCount }) {
   // Texto inteligente baseado no estado da conexão (não força "/spy" /
-  // signup pra user já autenticado).
+  // signup pra user já autenticado). Considera "conectado" se uazapi tem
+  // chats OU nosso DB diz connected — uazapi é a verdade ao vivo.
   let title;
   let body;
   let cta = null;
 
   if (isConnected) {
-    if (messageCount >= 10) {
+    if (chatCount > 0) {
       title = 'WhatsApp conectado — pronto pra primeiro relatório';
       body = (
         <>
-          Você já tem {messageCount.toLocaleString('pt-BR')} mensagens coletadas.
-          Vá em Relatórios e clique <strong>Gerar relatório</strong> pra criar
-          o primeiro diagnóstico.
+          Detectadas <strong>{chatCount.toLocaleString('pt-BR')}</strong> conversas
+          {capturedCount > 0 && (
+            <> e <strong>{capturedCount.toLocaleString('pt-BR')}</strong> mensagens já capturadas localmente</>
+          )}.
+          Gere o primeiro diagnóstico agora — o relatório puxa o histórico
+          direto do WhatsApp em até 3min.
         </>
       );
-      cta = { label: 'Ir para Relatórios', to: '/app/reports' };
+      cta = { label: 'Gerar primeiro relatório', to: '/app/reports' };
     } else {
-      title = 'WhatsApp conectado — aguardando mensagens';
+      title = 'WhatsApp conectado — aguardando dados';
       body = (
         <>
-          Coletadas até agora: <strong>{messageCount.toLocaleString('pt-BR')}</strong>.
-          A análise precisa de no mínimo 10 mensagens. Continue usando o
-          WhatsApp da clínica normalmente — cada nova mensagem aparece aqui em
-          tempo real.
+          A análise precisa de pelo menos uma conversa. Continue usando o WhatsApp
+          da clínica normalmente — assim que tiver atividade, geramos o relatório.
         </>
       );
       cta = { label: 'Ver status da conexão', to: '/app/whatsapp' };
@@ -235,11 +308,21 @@ function ChartCard({ title, subtitle, children, fullWidth }) {
 
 export default function DashboardPage() {
   const [state, setState] = useState({ loading: true, reports: [], latest: null, error: null });
-  // Reflete o estado real do WhatsApp na empty state (não força "/spy"
-  // quando user já tá conectado).
+  // Duas fontes de verdade:
+  //   - useWhatsappStatus: nosso DB (status row + captured_messages count)
+  //   - useUazapiStats:    /chat/find ao vivo (uazapi confirma se WhatsApp
+  //                        tá pareado de verdade, independente do nosso DB)
+  // Se uazapi-stats responde com chat_count > 0, o usuário ESTÁ conectado
+  // mesmo que nosso DB esteja atrasado/em pending. Isso resolve o sintoma
+  // "WhatsApp conectado mas dashboard diz não conectado".
   const { status: waStatus } = useWhatsappStatus();
-  const isConnected = Boolean(waStatus?.connected);
-  const messageCount = waStatus?.message_count ?? 0;
+  const uazapiStats = useUazapiStats({ enabled: true });
+  const capturedCount = waStatus?.message_count ?? 0;
+  const chatCount = uazapiStats?.stats?.chat_count ?? 0;
+  const uazapiMessageCount = uazapiStats?.stats?.message_count ?? 0;
+  const dbConnected = Boolean(waStatus?.connected);
+  const uazapiConnected = chatCount > 0;
+  const isConnected = dbConnected || uazapiConnected;
 
   useEffect(() => {
     let alive = true;
@@ -319,7 +402,18 @@ export default function DashboardPage() {
     return (
       <div style={{ maxWidth: 900 }}>
         {header}
-        <EmptyState isConnected={isConnected} messageCount={messageCount} />
+        {isConnected && (
+          <LiveStatsRow
+            chatCount={chatCount}
+            uazapiMessageCount={uazapiMessageCount}
+            capturedCount={capturedCount}
+          />
+        )}
+        <EmptyState
+          isConnected={isConnected}
+          chatCount={chatCount}
+          capturedCount={capturedCount}
+        />
       </div>
     );
   }
