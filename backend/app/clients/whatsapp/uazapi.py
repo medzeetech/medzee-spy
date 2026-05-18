@@ -173,7 +173,12 @@ class UazapiProvider:
                 "chats.update",
             ],
             "enabled": True,
-            "excludeMessages": False,
+            # uazapi (Go) espera []string. Mandar boolean false dispara
+            # "cannot unmarshal bool into Go struct field
+            # webhookStruct.excludeMessages of type []string" → HTTP 500.
+            # Empty list = "não excluir nenhum tipo de mensagem". Confirmado
+            # via curl direto: com [] o registro retorna 200; com false, 500.
+            "excludeMessages": [],
             "addUrlEvents": True,
             "addUrlTypesMessages": True,
         }
