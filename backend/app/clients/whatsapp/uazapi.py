@@ -132,52 +132,70 @@ class UazapiProvider:
         if not instance_token:
             raise UazapiUnknown("missing instance token in /instance/create response")
 
-        connect_payload = await self._request(
-            "POST",
-            "/instance/connect",
-            op="create_session.connect",
-            token=instance_token,
-            json_body={},
-        )
-        qr = _extract_qr(connect_payload)
+        # /instance/connect às vezes retorna 200 com {"error": "..."} quando
+        # a instância foi criada agora mesmo (não pronta ainda). Retry com
+        # delays curtos costuma resolver. Confirmado via auditoria empírica.
+        connect_payload = None
+        connect_delays = (0.0, 2.0, 4.0)
+        for attempt, delay in enumerate(connect_delays):
+            if delay > 0:
+                await asyncio.sleep(delay)
+            connect_payload = await self._request(
+                "POST",
+                "/instance/connect",
+                op="create_session.connect",
+                token=instance_token,
+                json_body={},
+            )
+            # Resposta de erro vem como {"error": "..."} mesmo com HTTP 200.
+            if isinstance(connect_payload, dict) and connect_payload.get("error"):
+                logger.info(
+                    "uazapi connect_retry attempt=%d/%d delay_next=%s error=%r",
+                    attempt + 1,
+                    len(connect_delays),
+                    connect_delays[attempt + 1] if attempt + 1 < len(connect_delays) else "-",
+                    str(connect_payload.get("error"))[:80],
+                )
+                continue
+            # Tem QR? sai do loop.
+            if _extract_qr(connect_payload):
+                break
+
+        qr = _extract_qr(connect_payload) if connect_payload else None
         if not qr:
-            raise UazapiUnknown("missing qrcode in /instance/connect response")
+            raise UazapiUnknown("missing qrcode in /instance/connect response after retries")
         return ProviderSession(session_token=instance_token, qr_base64=qr)
 
     async def register_webhook(self, session_token: str, callback_url: str) -> None:
-        # uazapi paid: testes empíricos mostraram que ``events: ['connection',
-        # 'messages']`` não estava entregando o evento de mensagens (só o
-        # connection chegava). Ampliamos pra cobrir todos os nomes conhecidos
-        # de evento de mensagem no ecossistema Baileys/uazapi. Mantemos
-        # ``excludeMessages: false`` defensivo (alguns tiers default = exclude).
+        # Enum oficial de eventos (descoberto na spec OpenAPI da uazapi —
+        # ver .specs/project/ENDPOINT_AUDIT_2026-05-18.md). Nossa lista
+        # anterior tinha 9 valores inválidos ('messages.upsert', 'message',
+        # 'chats.upsert' etc) que uazapi aceitava silenciosamente sem
+        # disparar nada. Os nomes corretos do enum são:
+        #   connection, history, messages, messages_update,
+        #   newsletter_messages, call, contacts, presence,
+        #   groups, labels, chats, chat_labels, blocks, sender
         #
-        # Sem retry: register_webhook está no caminho síncrono de POST /sessions,
-        # então qualquer espera aqui trava o usuário no spinner "Gerando QR".
-        # _RETRY_DELAYS_S (10/30/60/120 = 220s) era impraticável; já testamos.
-        # Caller trata UazapiError como não-fatal — se falhar, o QR é entregue
-        # mesmo assim, só perde o webhook 'connection' (F1 auto-extract não
-        # dispara, mas F4 on-demand ainda funciona).
+        # Mantemos só o que importa pro nosso uso:
+        #   - connection: pareamento (poll fallback usa pra detectar status)
+        #   - messages: TODA mensagem nova (entrada e saída) — CORE F4
+        #   - messages_update: edição/deleção de mensagem
+        #   - history: evento disparado após /message/history-sync completar
+        #   - chats: criação/update de chat
+        #   - presence: usuário online/offline (não usamos hoje mas barato)
         body = {
             "url": callback_url,
             "events": [
                 "connection",
                 "messages",
-                "messages.upsert",
-                "messages.update",
-                "message",
-                "message.upsert",
-                "message.received",
-                "messages.received",
-                "presence.update",
-                "chats.upsert",
-                "chats.update",
+                "messages_update",
+                "history",
+                "chats",
+                "presence",
             ],
             "enabled": True,
-            # uazapi (Go) espera []string. Mandar boolean false dispara
-            # "cannot unmarshal bool into Go struct field
-            # webhookStruct.excludeMessages of type []string" → HTTP 500.
-            # Empty list = "não excluir nenhum tipo de mensagem". Confirmado
-            # via curl direto: com [] o registro retorna 200; com false, 500.
+            # uazapi (Go) espera []string. Empty list = "não excluir nenhum
+            # tipo de mensagem". Boolean false dispara 500 do unmarshal.
             "excludeMessages": [],
             "addUrlEvents": True,
             "addUrlTypesMessages": True,
@@ -254,6 +272,83 @@ class UazapiProvider:
             has_more = len(chats) == limit
         return chats, has_more
 
+    async def request_history_sync(
+        self,
+        session_token: str,
+        chat_jid: str,
+        count: int = 100,
+    ) -> None:
+        """Pedir à uazapi pra sincronizar o histórico de um chat sob demanda.
+
+        ⚠️ CRUCIAL: sem chamar isso ANTES de :meth:`list_messages`, /message/find
+        retorna SEMPRE vazio em instâncias recém-conectadas. uazapi só popula
+        o cache de mensagens quando explicitamente pedimos via /message/history-sync.
+
+        A resposta é assíncrona: a uazapi devolve 200 imediatamente, mas as
+        mensagens chegam minutos depois via webhook 'history' OU ficam
+        disponíveis em /message/find ~5-10s depois. Pra fluxo síncrono
+        (pull_history), o caller deve esperar curto antes de re-listar.
+
+        Args:
+            chat_jid: JID completo (ex: "5511999@s.whatsapp.net" ou ".@g.us")
+            count: 1-100 mensagens. Default 100 (max permitido pelo enum).
+
+        Best-effort: falhas aqui não devem matar o pipeline — caller pode
+        ainda tentar /message/find direto (que provavelmente retornará 0).
+        """
+        await self._request(
+            "POST",
+            "/message/history-sync",
+            op="request_history_sync",
+            token=session_token,
+            json_body={
+                "number": chat_jid,
+                "mode": "history",
+                "count": min(max(count, 1), 100),
+            },
+        )
+
+    async def get_chat_details(
+        self, session_token: str, number: str
+    ) -> dict[str, Any]:
+        """Obter detalhes ricos de um contato (foto, perfil, mapeamento LID↔JID).
+
+        Útil pra:
+        1. Resolver `@lid` → `@s.whatsapp.net` quando mensagens chegam com LID
+           (campo `wa_chatlid` da resposta faz essa ponte)
+        2. Enriquecer captured_messages com nome real do contato e foto
+        3. Validar se um número existe no WhatsApp
+
+        Body é só ``{number: "<phone digits>"}`` — sem @s.whatsapp.net.
+        """
+        return await self._request(
+            "POST",
+            "/chat/details",
+            op="get_chat_details",
+            token=session_token,
+            json_body={"number": number},
+        )
+
+    async def get_webhook_errors(
+        self, session_token: str
+    ) -> list[dict[str, Any]]:
+        """Listar últimos erros do webhook local (debug).
+
+        Quando webhook não tá disparando, polar isso revela se uazapi tentou
+        e errou (4xx/5xx, timeout, etc). Retorna array vazio quando sem erros.
+        """
+        payload = await self._request(
+            "GET",
+            "/webhook/errors",
+            op="get_webhook_errors",
+            token=session_token,
+        )
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            return payload["data"]
+        return []
+
     async def list_messages(
         self,
         session_token: str,
@@ -276,7 +371,15 @@ class UazapiProvider:
         has_more = _extract_has_more(payload)
         if has_more is None:
             has_more = len(messages) == limit
-        next_offset_raw = _maybe_int(payload.get("next_offset")) if isinstance(payload, dict) else None
+        # uazapi paid retorna `nextOffset` (camelCase). Mantemos `next_offset`
+        # como fallback pra robustez. Fallback final é heurística (offset+len).
+        next_offset_raw = None
+        if isinstance(payload, dict):
+            for k in ("nextOffset", "next_offset"):
+                if k in payload:
+                    next_offset_raw = _maybe_int(payload.get(k))
+                    if next_offset_raw is not None:
+                        break
         next_offset = next_offset_raw if next_offset_raw is not None else offset + len(messages)
         return messages, has_more, next_offset
 
@@ -607,14 +710,54 @@ def _extract_has_more(payload: Any) -> bool | None:
 
 
 def _parse_chat(raw: Any) -> Chat:
+    """Parse /chat/find item para Chat dataclass.
+
+    Campos uazapi (confirmados via auditoria 2026-05-18):
+      - wa_chatid: JID completo (557597035806@s.whatsapp.net OR ...@g.us)
+      - wa_contactName: nome no nosso WhatsApp (ex: "Amor")
+      - wa_name: nome de perfil do contato (ex: "Ru")
+      - wa_isGroup: bool
+      - wa_lastMsgTimestamp: ts em MILISSEGUNDOS unix
+
+    Mantemos fallbacks legados (contact_name, isGroup, etc) pra suporte caso
+    a uazapi mude o shape ou pra outros adapters no futuro.
+    """
     if not isinstance(raw, dict):
         return Chat(wa_chatid="", contact_name="", is_group=False, last_message_at=None)
     wa_chatid = _first_str(raw, ("wa_chatid", "chatid", "id", "jid")) or ""
+    # wa_contactName tem prioridade — é o nome que vemos no nosso celular.
+    # Cai pra wa_name (nome de perfil do contato) e depois pros fallbacks legados.
     contact_name = (
-        _first_str(raw, ("contact_name", "name", "pushName", "push_name", "subject")) or ""
+        _first_str(
+            raw,
+            (
+                "wa_contactName",
+                "wa_name",
+                "contact_name",
+                "name",
+                "pushName",
+                "push_name",
+                "subject",
+                "lead_fullName",
+                "lead_name",
+            ),
+        )
+        or ""
     )
-    is_group = _first_bool(raw, ("is_group", "isGroup", "group")) or wa_chatid.endswith("@g.us")
-    last_message_at = _first_ts(raw, ("last_message_at", "lastMessageAt", "t", "timestamp"))
+    is_group = (
+        _first_bool(raw, ("wa_isGroup", "is_group", "isGroup", "group"))
+        or wa_chatid.endswith("@g.us")
+    )
+    last_message_at = _first_ts(
+        raw,
+        (
+            "wa_lastMsgTimestamp",
+            "last_message_at",
+            "lastMessageAt",
+            "t",
+            "timestamp",
+        ),
+    )
     return Chat(
         wa_chatid=wa_chatid,
         contact_name=contact_name,

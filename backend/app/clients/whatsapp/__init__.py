@@ -58,6 +58,23 @@ class WhatsAppProvider(Protocol):
         """Returns the raw uazapi /chat/find payload (for totalChatsStats)."""
         ...
 
+    async def request_history_sync(
+        self, session_token: str, chat_jid: str, count: int = 100
+    ) -> None:
+        """Triggers uazapi server-side sync of chat history.
+
+        Without this, ``list_messages`` returns empty for fresh instances.
+        """
+        ...
+
+    async def get_chat_details(self, session_token: str, number: str) -> dict:
+        """Rich contact details including LID↔JID mapping (wa_chatlid)."""
+        ...
+
+    async def get_webhook_errors(self, session_token: str) -> list[dict]:
+        """Diagnostic: list recent webhook delivery errors."""
+        ...
+
     async def disconnect(self, session_token: str) -> None:
         ...
 

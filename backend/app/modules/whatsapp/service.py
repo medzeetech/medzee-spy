@@ -1179,61 +1179,124 @@ def _parse_uazapi_message(
     session_id: UUID,
     user_id: UUID,
 ) -> CapturedMessageInsert | None:
-    """Normalize a single uazapi message dict into a :class:`CapturedMessageInsert`.
+    """Normalize a single uazapi message dict into :class:`CapturedMessageInsert`.
 
-    Tolerates three known shapes (and falls back to ``message_type='other'``
-    with ``text=None`` for anything we don't yet model):
+    Suporta DOIS shapes diferentes (uazapi varia entre canais):
 
-    1. **Plain text** — ``message.conversation``
-    2. **Extended text** (replies, mentions, formatting) — ``message.extendedTextMessage.text``
-    3. **Image with caption** — ``message.imageMessage.caption``
+    **Shape A — Baileys/webhook nested**:
+    ```
+    {key: {remoteJid, id, fromMe}, messageTimestamp,
+     message: {conversation | extendedTextMessage.text | imageMessage.caption | ...}}
+    ```
 
-    Returns ``None`` on any shape we can't safely attribute (missing chatid,
-    missing/invalid timestamp, non-dict input). The caller treats ``None``
-    as "skip this row, keep going".
+    **Shape B — uazapi REST flat** (do /message/find e webhooks recentes):
+    ```
+    {chatid, messageid, messageTimestamp, fromMe, sender, senderName,
+     text, content, messageType: "StickerMessage" | "conversation" | ...}
+    ```
+
+    LID handling: quando ``chatid`` termina com ``@lid`` (locally-anchored
+    identity de contatos novos do WhatsApp), aceita mas loga warning —
+    futuras versões podem mapear via /chat/details (wa_chatlid field).
+
+    Returns ``None`` em payload sem chatid OU sem timestamp válido. Caller
+    pula o item.
     """
     if not isinstance(raw, dict):
         return None
 
-    key = raw.get("key") or {}
-    if not isinstance(key, dict):
-        key = {}
-
-    wa_chatid = key.get("remoteJid") or raw.get("remoteJid")
+    # --- chatid: pode vir flat (shape B) ou em key.remoteJid (shape A) ---
+    key = raw.get("key") if isinstance(raw.get("key"), dict) else {}
+    wa_chatid = (
+        raw.get("chatid")          # uazapi REST flat
+        or key.get("remoteJid")    # Baileys webhook nested
+        or raw.get("remoteJid")    # webhook flat (fallback)
+    )
     if not wa_chatid:
         return None
+    wa_chatid = str(wa_chatid)
 
-    raw_message_id = key.get("id") or raw.get("id")
-    is_from_me = bool(key.get("fromMe") or raw.get("fromMe"))
+    # LID detection: contato novo do WhatsApp pode vir como @lid em vez do
+    # @s.whatsapp.net que conhecemos. Salvamos como veio mas logamos pra
+    # observabilidade. Solução completa exige cache LID↔JID via /chat/details.
+    if wa_chatid.endswith("@lid"):
+        logger.info(
+            "captured.parse.lid_chatid",
+            extra={
+                "session_id": str(session_id),
+                "wa_chatid": wa_chatid,
+            },
+        )
 
-    ts_unix = raw.get("messageTimestamp") or raw.get("timestamp")
+    # --- messageid e fromMe (shape A nested, shape B flat) ---
+    raw_message_id = (
+        raw.get("messageid")  # uazapi flat
+        or key.get("id")
+        or raw.get("id")
+    )
+    is_from_me = bool(
+        raw.get("fromMe")  # flat (presente em ambos shapes B e webhook)
+        or key.get("fromMe")
+    )
+
+    # --- timestamp: pode vir em segundos OU milissegundos ---
+    ts_unix = (
+        raw.get("messageTimestamp")
+        or raw.get("timestamp")
+        or raw.get("ts")
+    )
     if ts_unix is None:
         return None
     try:
-        ts = datetime.fromtimestamp(int(ts_unix), tz=timezone.utc)
-    except (TypeError, ValueError, OSError, OverflowError):
+        ts_int = int(ts_unix)
+    except (TypeError, ValueError):
+        return None
+    # Heurística: >10^10 = milissegundos. uazapi REST manda em ms.
+    if ts_int > 10_000_000_000:
+        ts_int = ts_int // 1000
+    try:
+        ts = datetime.fromtimestamp(ts_int, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
         return None
 
-    msg = raw.get("message")
+    # --- text + message_type: shape A (nested message) OU shape B (flat text + messageType) ---
     text: str | None = None
     message_type: str = "other"
-    if isinstance(msg, dict):
+
+    flat_text = raw.get("text")
+    flat_type = raw.get("messageType")
+    if isinstance(flat_text, str) and flat_text:
+        text = flat_text
+    if isinstance(flat_type, str) and flat_type:
+        # uazapi REST manda capitalized ("StickerMessage", "ImageMessage").
+        # Normalizamos pra valores compatíveis com nosso MessageType enum.
+        lowered = flat_type.lower().replace("message", "")
+        if lowered in ("conversation", "extendedtext", "extendedtextmessage", "chat", ""):
+            message_type = "text"
+        elif lowered in ("image", "audio", "video", "sticker", "document"):
+            message_type = lowered
+        else:
+            message_type = "other"
+
+    # Shape A (Baileys nested) — só executado se flat não preencheu.
+    msg = raw.get("message")
+    if (text is None or message_type == "other") and isinstance(msg, dict):
         if "conversation" in msg and isinstance(msg["conversation"], str):
-            text = msg["conversation"]
+            text = text or msg["conversation"]
             message_type = "text"
         elif "extendedTextMessage" in msg:
             ext = msg["extendedTextMessage"]
             if isinstance(ext, dict):
                 inner_text = ext.get("text")
                 if isinstance(inner_text, str):
-                    text = inner_text
+                    text = text or inner_text
                 message_type = "text"
         elif "imageMessage" in msg:
             img = msg["imageMessage"]
             if isinstance(img, dict):
                 caption = img.get("caption")
                 if isinstance(caption, str):
-                    text = caption
+                    text = text or caption
             message_type = "image"
         elif "audioMessage" in msg:
             message_type = "audio"
@@ -1244,7 +1307,12 @@ def _parse_uazapi_message(
         elif "documentMessage" in msg:
             message_type = "document"
 
-    contact_name = raw.get("pushName") or raw.get("notify")
+    # --- contact_name: pushName/notify (webhook) ou senderName (REST) ---
+    contact_name = (
+        raw.get("senderName")
+        or raw.get("pushName")
+        or raw.get("notify")
+    )
     if contact_name is not None and not isinstance(contact_name, str):
         contact_name = None
 

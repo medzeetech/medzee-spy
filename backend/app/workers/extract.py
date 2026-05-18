@@ -673,6 +673,44 @@ async def pull_history(
                 break
             offset += _PAGE_SIZE
 
+        # CRÍTICO: uazapi paid não popula o cache de mensagens automaticamente.
+        # /message/find retorna 0 até a gente chamar /message/history-sync por
+        # chat (descoberto via curl-test em 2026-05-18, vide
+        # ENDPOINT_AUDIT_2026-05-18.md). Disparamos sync pra TODOS os chats em
+        # paralelo (uazapi aguenta bursts) e damos ~6s pro buffer popular antes
+        # de listar mensagens. Falhas individuais de sync são silenciadas — o
+        # _extract_chat seguinte vai apenas devolver lista vazia se sync falhou.
+        sem_sync = asyncio.Semaphore(_PULL_HISTORY_PARALLELISM)
+
+        async def _sync_one(chat: Chat) -> None:
+            async with sem_sync:
+                try:
+                    await provider.request_history_sync(
+                        session_token, chat.wa_chatid, count=100
+                    )
+                except Exception:
+                    logger.warning(
+                        "pull_history: history-sync falhou (ignorado)",
+                        extra={"op": "pull_history", "chatid": chat.wa_chatid},
+                        exc_info=True,
+                    )
+
+        if chats:
+            sync_tasks = [asyncio.create_task(_sync_one(c)) for c in chats]
+            try:
+                await asyncio.gather(*sync_tasks)
+            except Exception:
+                # Best-effort — qualquer falha no gather é coberta pelo
+                # _sync_one que swallow individualmente.
+                pass
+            logger.info(
+                "pull_history: history-sync requested",
+                extra={"op": "pull_history", "chat_count": len(chats)},
+            )
+            # Pausa pra uazapi popular o cache. 6s é compromisso entre
+            # "rápido o suficiente" e "tempo suficiente pro sync popular".
+            await asyncio.sleep(6.0)
+
         sem = asyncio.Semaphore(_PULL_HISTORY_PARALLELISM)
 
         async def _extract_chat(chat: Chat) -> None:
