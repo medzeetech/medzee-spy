@@ -197,8 +197,15 @@ class UazapiProvider:
             # uazapi (Go) espera []string. Empty list = "não excluir nenhum
             # tipo de mensagem". Boolean false dispara 500 do unmarshal.
             "excludeMessages": [],
-            "addUrlEvents": True,
-            "addUrlTypesMessages": True,
+            # ⚠️ AMBOS false. Quando True, uazapi APENDA o nome do evento
+            # ao path da URL — ex: posta em /webhook/<id>/connection e
+            # /webhook/<id>/messages/text em vez de /webhook/<id>. Nosso
+            # router tem só /webhook/<id> → 404 em todos os callbacks.
+            # Confirmado nos logs do deploy 5bd45b0 (linha 404 do
+            # /webhook/.../connection). Doc oficial: "false (padrão): URL
+            # normal · true: Adiciona evento na URL".
+            "addUrlEvents": False,
+            "addUrlTypesMessages": False,
         }
         await self._request(
             "POST",
