@@ -179,9 +179,13 @@ class WhatsAppService:
         # Steps 3-6: persist + state. If anything here raises, we still need
         # to try and clean up the DB row (best effort).
         session_id = uuid4()
+        # URL com path-param (não-query). Alguns providers de webhook rejeitam
+        # URLs com `?` na validação interna — uazapi paid mostrou 500 constante
+        # em /webhook registro com a URL de query. Path-param é o padrão da
+        # maioria dos providers modernos (Stripe, MP, Twilio). Endpoint legado
+        # `/api/whatsapp/webhook?session_id=...` segue funcionando.
         callback_url = (
-            f"{self._callback_base_url}/api/whatsapp/webhook"
-            f"?session_id={session_id}"
+            f"{self._callback_base_url}/api/whatsapp/webhook/{session_id}"
         )
 
         # Webhook setup é NÃO-FATAL: se falhar (após retry interno), o QR

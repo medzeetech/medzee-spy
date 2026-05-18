@@ -193,50 +193,30 @@ async def session_events(session_id: UUID) -> StreamingResponse:
 # ---------------------------------------------------------------------------
 
 
-@router.post(
-    "/webhook",
-    status_code=200,
-    summary="Callback from uazapi.com — forwarded to the session bus",
-    tags=["whatsapp", "webhook"],
-)
-async def uazapi_webhook(
-    request: Request,
-    session_id: UUID = Query(
-        ..., description="UUID from the registered callback URL"
-    ),
-    service: WhatsAppService = Depends(get_service),
-) -> dict:
-    """Receive a uazapi callback and dispatch it to the service.
-
-    Contract (design § 7.3 / EC-06):
-
-    * **Always** return 200 ``{"status": "ok"}``. Anything else makes uazapi
-      retry indefinitely, which would amplify a transient error into a
-      stampede.
-    * Must return in < 5s. The service already schedules the heavy extract
-      work via :py:func:`asyncio.create_task`, so calling
-      :py:meth:`handle_webhook_event` is itself fast.
-    * Unknown ``session_id`` → silently no-op.
-
-    We accept the raw JSON body as ``dict`` rather than a Pydantic-validated
-    model because uazapi's wire schema is loosely documented — the field
-    names and shape vary across event types and tier configurations. A
-    strict model would 422 the request, prompting uazapi to retry-storm.
-    The service is responsible for sniffing what it needs out of the payload.
+async def _process_webhook_body(
+    body: dict,
+    session_id: UUID | None,
+    service: WhatsAppService,
+) -> None:
+    """Lógica compartilhada entre os 2 endpoints de webhook (path-param novo
+    e query legado). Loga summary + dispara handle_webhook_event. Sem
+    session_id é tratado como probe — só loga e retorna sem dispatch.
     """
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-
     event_hint = body.get("event") or body.get("EventType") or body.get("type") or "?"
     instance = body.get("instance") if isinstance(body.get("instance"), dict) else {}
     status_hint = instance.get("status") or "?"
 
-    # QR refreshes (status=connecting) chegam a cada ~20s e o payload inclui
-    # o base64 do QR (3-5KB). Eles não trazem informação acionável: o
-    # ``handle_webhook_event`` só age em ``connected`` / ``disconnected``.
-    # Mantemos um DEBUG pra debug local mas não polui prod.
+    if session_id is None:
+        # Probe de uazapi (sem session_id no path/query). Não dispatch — só
+        # log + 200. Isso evita o cenário em que uazapi testava a URL
+        # com body vazio e nossa rota explodia 422, fazendo a uazapi
+        # devolver 500 no /webhook de registro.
+        logger.info(
+            "route.webhook.probe (no session_id) event=%s",
+            event_hint,
+        )
+        return
+
     if event_hint == "connection" and status_hint == "connecting":
         logger.debug(
             "route.webhook.qr_refresh session_id=%s name=%s",
@@ -244,8 +224,6 @@ async def uazapi_webhook(
             instance.get("name"),
         )
     else:
-        # Summary curto pra eventos acionáveis (connected, disconnected,
-        # LoggedOut, etc). NUNCA loga o qrcode nem o token.
         summary = {
             "EventType": body.get("EventType") or body.get("event"),
             "status": status_hint,
@@ -264,13 +242,76 @@ async def uazapi_webhook(
     try:
         await service.handle_webhook_event(session_id, body)
     except Exception:
-        # Swallow + log: webhook must stay 2xx so uazapi doesn't retry-storm.
         logger.exception(
             "route.webhook.handler_failed session_id=%s event=%s",
             session_id,
             event_hint,
         )
 
+
+@router.post(
+    "/webhook/{session_id}",
+    status_code=200,
+    summary="Callback from uazapi — path-param variant (preferido pelo uazapi)",
+    tags=["whatsapp", "webhook"],
+)
+async def uazapi_webhook_path(
+    request: Request,
+    session_id: UUID,
+    service: WhatsAppService = Depends(get_service),
+) -> dict:
+    """Variante path-param do webhook. Substitui o `?session_id=...` que
+    parece causar 500 no registro `/webhook` da uazapi paid (H1 do AUDIT).
+    Igual semântica: sempre devolve 200 OK pra não criar retry storm.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    await _process_webhook_body(body, session_id, service)
+    return {"status": "ok"}
+
+
+@router.get(
+    "/webhook/{session_id}",
+    status_code=200,
+    summary="Probe handler — alguns webhook providers fazem GET antes do POST",
+    tags=["whatsapp", "webhook"],
+)
+async def uazapi_webhook_probe(session_id: UUID) -> dict:
+    """Resposta vazia 200 OK pra qualquer GET. uazapi pode estar validando o
+    callback URL via GET antes de aceitar o registro — se a gente devolver
+    405 Method Not Allowed, o registro 500-a.
+    """
+    logger.info("route.webhook.get_probe session_id=%s", session_id)
+    return {"status": "ok"}
+
+
+@router.post(
+    "/webhook",
+    status_code=200,
+    summary="Callback from uazapi.com (legacy query-param) — forwarded to session bus",
+    tags=["whatsapp", "webhook"],
+)
+async def uazapi_webhook(
+    request: Request,
+    session_id: UUID | None = Query(
+        default=None,
+        description="UUID from the registered callback URL (legacy — agora também pode vir como path /webhook/{session_id})",
+    ),
+    service: WhatsAppService = Depends(get_service),
+) -> dict:
+    """Rota legada com session_id via query string. Aceita também probe
+    SEM session_id (retorna 200 + log), pra evitar 422 quando a uazapi
+    testa o URL na hora do registro.
+
+    Contract (design § 7.3 / EC-06): SEMPRE 200 OK pra impedir retry storm.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    await _process_webhook_body(body, session_id, service)
     return {"status": "ok"}
 
 
