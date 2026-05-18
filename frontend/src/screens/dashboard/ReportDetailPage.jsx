@@ -153,6 +153,21 @@ function FailedCard({ errorCode }) {
 
 function ReportContent({ partial, payload }) {
   const p = payload ?? {};
+
+  // Métricas derivadas — cruzam o payload pra alimentar o HeroCard sem
+  // mais hardcoded "4h 22min / 12,4% / 47 oportunidades".
+  const opportunityCount = (p.opportunities || []).length;
+  const conversionPct =
+    p.funnel && p.funnel.length >= 5 ? p.funnel[p.funnel.length - 1]?.pct ?? null : null;
+  const avgResponseHours = (() => {
+    const buckets = p.response_time_distribution || [];
+    const midpoints = [5 / 60 / 2, (5 + 30) / 60 / 2, (30 / 60 + 1) / 2, (1 + 4) / 2, (4 + 24) / 2, 36];
+    const total = buckets.reduce((s, b) => s + (b.count || 0), 0);
+    if (total === 0) return null;
+    const weighted = buckets.reduce((s, b, i) => s + (b.count || 0) * midpoints[i], 0);
+    return Math.round((weighted / total) * 10) / 10;
+  })();
+
   const animatedChildren = [
     <ReportTopbar key="topbar" />,
     <HeroCard
@@ -160,6 +175,10 @@ function ReportContent({ partial, payload }) {
       score={p.score}
       messageCount={p.message_count}
       diagnosticSummary={p.diagnostic_summary}
+      dataQuality={p.data_quality}
+      opportunityCount={opportunityCount}
+      avgResponseHours={avgResponseHours}
+      conversionPct={conversionPct}
     />,
     <FunnelSection key="funnel" funnel={p.funnel} />,
     <Banner key="banner" />,
@@ -174,6 +193,7 @@ function ReportContent({ partial, payload }) {
       objections={p.objections}
       faqs={p.faqs}
       sentiment={p.sentiment}
+      messageCount={p.message_count}
     />,
     <OpportunitiesSection key="opps" opportunities={p.opportunities} />,
     <BenchmarkSection

@@ -1,11 +1,9 @@
 import { Fragment } from 'react';
 import { COLORS } from '../../constants/colors.js';
-import {
-  HEATMAP_DAYS as MOCK_HEATMAP_DAYS,
-  HEATMAP_PERIODS as MOCK_HEATMAP_PERIODS,
-  RESPONSE_DISTRIBUTION as MOCK_RESPONSE_DISTRIBUTION,
-} from '../../data/reportData.js';
 import SectionHeader from './SectionHeader.jsx';
+import SectionEmptyState from './SectionEmptyState.jsx';
+
+const DEFAULT_DAYS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
 
 function heatStyle(val) {
   if (val === 0) {
@@ -25,22 +23,43 @@ export default function ResponseTimeSection({
   heatmapPeriods,
   responseTimeDistribution,
 }) {
-  const days = heatmapDays && heatmapDays.length > 0 ? heatmapDays : MOCK_HEATMAP_DAYS;
-  const periods =
-    heatmapPeriods && heatmapPeriods.length > 0 ? heatmapPeriods : MOCK_HEATMAP_PERIODS;
+  const days = heatmapDays && heatmapDays.length > 0 ? heatmapDays : DEFAULT_DAYS;
+  const periods = heatmapPeriods && heatmapPeriods.length > 0 ? heatmapPeriods : null;
   const distribution =
     responseTimeDistribution && responseTimeDistribution.length > 0
       ? responseTimeDistribution
-      : MOCK_RESPONSE_DISTRIBUTION;
+      : null;
 
-  const maxCount = Math.max(...distribution.map((d) => d.count));
+  if (!periods && !distribution) {
+    return (
+      <section style={{ marginBottom: 56 }}>
+        <SectionHeader
+          kicker="02 — Tempo de resposta"
+          title="Quando você responde — e quando não"
+          sub="Análise de tempo até a 1ª resposta por dia/horário."
+        />
+        <SectionEmptyState
+          title="Sem mensagens suficientes pra calcular tempo de resposta"
+          message="Precisamos de pelo menos algumas conversas com troca de mensagens (cliente → clínica → cliente) pra medir tempos."
+          suggestion="O cálculo fica mais preciso conforme mais conversas acumulam no período."
+        />
+      </section>
+    );
+  }
+
+  const maxCount = distribution ? Math.max(...distribution.map((d) => d.count), 1) : 0;
+  const totalResponses = distribution ? distribution.reduce((s, b) => s + (b.count || 0), 0) : 0;
 
   return (
     <section style={{ marginBottom: 56 }}>
       <SectionHeader
         kicker="02 — Tempo de resposta"
         title="Quando você responde — e quando não"
-        sub="73% das mensagens fora do expediente ficam sem resposta. Sábado e noite são os piores horários."
+        sub={
+          totalResponses > 0
+            ? `Análise de ${totalResponses.toLocaleString('pt-BR')} primeiras respostas no período.`
+            : 'Análise de tempo até a 1ª resposta por dia/horário.'
+        }
       />
 
       <div
@@ -100,7 +119,7 @@ export default function ResponseTimeSection({
                 </div>
               ))}
 
-              {periods.map((p) => (
+              {(periods || []).map((p) => (
                 <Fragment key={p.label}>
                   <div
                     style={{
@@ -180,8 +199,8 @@ export default function ResponseTimeSection({
           </div>
 
           <div className="flex flex-col" style={{ gap: 12 }}>
-            {distribution.map((row) => {
-              const pct = (row.count / maxCount) * 100;
+            {(distribution || []).map((row) => {
+              const pct = maxCount > 0 ? (row.count / maxCount) * 100 : 0;
               return (
                 <div key={row.faixa} className="flex flex-col" style={{ gap: 4 }}>
                   <div className="flex items-center justify-between">
@@ -210,31 +229,42 @@ export default function ResponseTimeSection({
             })}
           </div>
 
-          <div
-            style={{
-              marginTop: 22,
-              borderLeft: `3px solid ${COLORS.wine}`,
-              background: 'rgba(92,29,46,0.05)',
-              borderRadius: 10,
-              padding: '12px 14px',
-            }}
-          >
-            <div
-              style={{
-                fontSize: 11,
-                color: COLORS.wine,
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                letterSpacing: '0.12em',
-                marginBottom: 4,
-              }}
-            >
-              Alerta crítico
-            </div>
-            <div style={{ fontSize: 12.5, color: COLORS.ink, lineHeight: 1.5 }}>
-              24% das primeiras respostas demoram mais de 4h. A conversão desses leads é 3,4× menor do que dos respondidos em até 30min.
-            </div>
-          </div>
+          {(() => {
+            // Alerta sai dos dados reais: % de respostas > 4h. Sem chute.
+            if (!distribution || totalResponses === 0) return null;
+            const slow = distribution
+              .filter((b) => ['4h–24h', '> 24h'].includes(b.faixa))
+              .reduce((s, b) => s + (b.count || 0), 0);
+            const slowPct = (slow / totalResponses) * 100;
+            if (slowPct < 5) return null;
+            return (
+              <div
+                style={{
+                  marginTop: 22,
+                  borderLeft: `3px solid ${COLORS.wine}`,
+                  background: 'rgba(92,29,46,0.05)',
+                  borderRadius: 10,
+                  padding: '12px 14px',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: COLORS.wine,
+                    fontWeight: 700,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.12em',
+                    marginBottom: 4,
+                  }}
+                >
+                  Alerta
+                </div>
+                <div style={{ fontSize: 12.5, color: COLORS.ink, lineHeight: 1.5 }}>
+                  <strong>{slowPct.toFixed(1)}%</strong> das primeiras respostas levam mais de 4h. Leads com resposta lenta costumam converter menos.
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </div>
     </section>

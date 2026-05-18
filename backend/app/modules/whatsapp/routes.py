@@ -451,7 +451,13 @@ async def whatsapp_uazapi_stats(
     session = await whatsapp_repo.get_active_for_user(user_id)
     if session is None:
         raise HTTPException(status_code=404, detail="no_active_session")
-    if session.get("status") != "connected":
+    # Mesma regra do /status: WhatsApp segue conectado durante e após o
+    # F1 extract (status transita pra extracting/extracted). Sem essa
+    # expansão, o dashboard ficava com 0/0/0 logo após connect porque o
+    # extract muda o status em milissegundos depois de 'connected'.
+    _ALIVE_STATUSES = {"connected", "extracting", "extracted"}
+    db_status = str(session.get("status") or "")
+    if db_status not in _ALIVE_STATUSES:
         raise HTTPException(status_code=409, detail="not_connected")
 
     token = session.get("uazapi_token")

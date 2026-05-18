@@ -1,6 +1,6 @@
 import { COLORS } from '../../constants/colors.js';
-import { BENCHMARKS } from '../../data/reportData.js';
 import SectionHeader from './SectionHeader.jsx';
+import SectionEmptyState from './SectionEmptyState.jsx';
 
 const SEGMENT_LABEL = {
   saude: 'Saúde',
@@ -9,8 +9,24 @@ const SEGMENT_LABEL = {
 };
 
 export default function BenchmarkSection({ benchmarks, clinicSegment }) {
-  const data = benchmarks && benchmarks.length > 0 ? benchmarks : BENCHMARKS;
+  const data = benchmarks && benchmarks.length > 0 ? benchmarks : null;
   const segmentLabel = SEGMENT_LABEL[clinicSegment] || SEGMENT_LABEL.outro;
+
+  if (!data) {
+    return (
+      <section style={{ marginBottom: 56 }}>
+        <SectionHeader
+          kicker="05 — Benchmark"
+          title="Você vs. clínicas similares"
+          sub={`Média de clínicas de ${segmentLabel} conectadas à Medzee`}
+        />
+        <SectionEmptyState
+          title="Benchmark indisponível para esta análise"
+          message="Os valores comparativos são calculados a partir das métricas reais do seu relatório. Sem dados suficientes, não conseguimos posicionar você ainda."
+        />
+      </section>
+    );
+  }
 
   return (
     <section style={{ marginBottom: 56 }}>

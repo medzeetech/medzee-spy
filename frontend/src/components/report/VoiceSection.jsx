@@ -1,11 +1,13 @@
 import { PieChart, Pie, Cell } from 'recharts';
 import { COLORS } from '../../constants/colors.js';
-import {
-  OBJECTIONS as MOCK_OBJECTIONS,
-  FAQS as MOCK_FAQS,
-  SENTIMENT as MOCK_SENTIMENT,
-} from '../../data/reportData.js';
 import SectionHeader from './SectionHeader.jsx';
+import SectionEmptyState from './SectionEmptyState.jsx';
+
+const SENTIMENT_COLORS = {
+  Positivo: '#FF6B35',
+  Neutro: '#B8A8D9',
+  Negativo: '#5C1D2E',
+};
 
 function CardShell({ title, sub, children }) {
   return (
@@ -36,21 +38,46 @@ function CardShell({ title, sub, children }) {
   );
 }
 
-export default function VoiceSection({ objections, faqs, sentiment }) {
-  const objectionsData =
-    objections && objections.length > 0 ? objections : MOCK_OBJECTIONS;
-  const faqsData = faqs && faqs.length > 0 ? faqs : MOCK_FAQS;
+export default function VoiceSection({ objections, faqs, sentiment, messageCount }) {
+  const objectionsData = objections && objections.length > 0 ? objections : null;
+  const faqsData = faqs && faqs.length > 0 ? faqs : null;
+  // Garante cores no sentiment quando vem do backend sem color (curto-circuito).
   const sentimentData =
-    sentiment && sentiment.length > 0 ? sentiment : MOCK_SENTIMENT;
-  const positiveValue =
-    sentimentData.find((s) => s.name === 'Positivo')?.value ?? sentimentData[0]?.value ?? 0;
+    sentiment && sentiment.length > 0
+      ? sentiment.map((s) => ({ ...s, color: s.color || SENTIMENT_COLORS[s.name] || COLORS.lavender }))
+      : null;
+  const sentimentHasData = sentimentData && sentimentData.some((s) => s.value > 0);
+  const positiveValue = sentimentHasData
+    ? sentimentData.find((s) => s.name === 'Positivo')?.value ?? 0
+    : null;
+
+  if (!objectionsData && !faqsData && !sentimentHasData) {
+    return (
+      <section style={{ marginBottom: 56 }}>
+        <SectionHeader
+          kicker="03 — Voz do paciente"
+          title="O que eles realmente perguntam"
+          sub="Análise semântica das conversas pra extrair padrões e objeções."
+        />
+        <SectionEmptyState
+          title="Sem voz do paciente capturada ainda"
+          message="A análise semântica precisa de conversas com texto real (perguntas, objeções, dúvidas)."
+          suggestion="Conversas só com áudio/figurinhas não entram aqui — captions de imagem entram."
+        />
+      </section>
+    );
+  }
 
   return (
     <section style={{ marginBottom: 56 }}>
       <SectionHeader
         kicker="03 — Voz do paciente"
         title="O que eles realmente perguntam"
-        sub="Análise semântica de 3.370 mensagens. Padrões que se repetem viram FAQ — ou viram objeções não respondidas."
+        sub={
+          messageCount
+            ? `Análise semântica de ${messageCount.toLocaleString('pt-BR')} mensagens.`
+            : 'Padrões que se repetem viram FAQ — ou viram objeções não respondidas.'
+        }
       />
 
       <div
@@ -59,8 +86,13 @@ export default function VoiceSection({ objections, faqs, sentiment }) {
       >
         {/* Objeções */}
         <CardShell title="Top objeções identificadas" sub="Motivos que travaram conversões">
+          {!objectionsData && (
+            <div style={{ fontSize: 13, color: COLORS.inkMute, fontStyle: 'italic' }}>
+              Nenhuma objeção recorrente identificada na amostra atual.
+            </div>
+          )}
           <div className="flex flex-col" style={{ gap: 14 }}>
-            {objectionsData.map((o) => (
+            {(objectionsData || []).map((o) => (
               <div key={o.label} className="flex flex-col" style={{ gap: 5 }}>
                 <div className="flex items-center justify-between">
                   <span style={{ fontSize: 12.5, color: COLORS.ink, fontWeight: 500 }}>{o.label}</span>
@@ -92,8 +124,13 @@ export default function VoiceSection({ objections, faqs, sentiment }) {
 
         {/* FAQs */}
         <CardShell title="Perguntas mais frequentes" sub="Candidatas a FAQ automatizado">
+          {!faqsData && (
+            <div style={{ fontSize: 13, color: COLORS.inkMute, fontStyle: 'italic' }}>
+              Sem padrões de perguntas repetidas identificados ainda.
+            </div>
+          )}
           <div className="flex flex-col">
-            {faqsData.map((faq, i) => (
+            {(faqsData || []).map((faq, i) => (
               <div
                 key={faq.q}
                 className="flex items-start"
@@ -150,6 +187,13 @@ export default function VoiceSection({ objections, faqs, sentiment }) {
 
         {/* Sentimento */}
         <CardShell title="Sentimento geral" sub="Tom predominante das conversas">
+          {!sentimentHasData && (
+            <div style={{ fontSize: 13, color: COLORS.inkMute, fontStyle: 'italic' }}>
+              Tom emocional não pôde ser avaliado nesta amostra.
+            </div>
+          )}
+          {sentimentHasData && (
+          <>
           <div style={{ position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center', height: 160 }}>
             <PieChart width={180} height={160}>
               <Pie
@@ -207,6 +251,8 @@ export default function VoiceSection({ objections, faqs, sentiment }) {
               </div>
             ))}
           </div>
+          </>
+          )}
         </CardShell>
       </div>
     </section>

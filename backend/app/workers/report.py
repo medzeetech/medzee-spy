@@ -252,6 +252,74 @@ async def _inner(
     conversation_count = compute_conversation_count(payload)
     score = compute_score(message_count, response_time, funnel)
 
+    # SHORT-CIRCUIT: dados insuficientes. Não chama LLM (evita alucinação)
+    # e persiste um relatório "transparente" com diagnostic_summary explicando
+    # o porquê + arrays vazios. O frontend trata data_quality=insufficient
+    # exibindo empty state honesto em vez de números chutados.
+    #
+    # Critério: < 5 mensagens OU 0 conversas. Acima disso, mesmo que pouco,
+    # vale rodar o LLM porque ele tem instrução explícita pra dizer "sample
+    # pequena, conclusões qualitativas" (vide BASE_SYSTEM).
+    if message_count < 5 or conversation_count == 0:
+        logger.info(
+            "worker.report.insufficient_data_short_circuit",
+            extra={
+                "op": "generate_report",
+                "report_id": str(report_id),
+                "session_id": str(session_id),
+                "message_count": message_count,
+                "conversation_count": conversation_count,
+            },
+        )
+        benchmarks = _build_clinic_benchmarks(
+            clinic_segment=clinic_segment,
+            response_time=response_time,
+            funnel=funnel,
+        )
+        diagnostic_summary = (
+            "Dados insuficientes para análise comercial. Nenhuma conversa com "
+            "texto suficiente foi capturada no período. Possíveis causas: "
+            "(1) WhatsApp recém-conectado — aguarde o histórico sincronizar; "
+            "(2) tier do provider não está entregando mensagens; "
+            "(3) janela escolhida não tem atividade real. Recomendação: "
+            "aguarde alguns minutos após conectar, verifique se o WhatsApp "
+            "está pareado em Configurações, e tente novamente."
+        )
+        insufficient_payload = _compose(
+            message_count=message_count,
+            conversation_count=conversation_count,
+            score=score,
+            clinic_segment=clinic_segment,
+            funnel=funnel,
+            response_time=response_time,
+            heatmap=heatmap,
+            llm_dict={
+                "diagnostic_summary": diagnostic_summary,
+                "opportunities": [],
+                "objections": [],
+                "faqs": [],
+                "sentiment": [
+                    {"name": "Positivo", "value": 0},
+                    {"name": "Neutro", "value": 0},
+                    {"name": "Negativo", "value": 0},
+                ],
+            },
+            benchmarks=benchmarks,
+            data_quality="insufficient",
+        )
+        persist_fn = (
+            repository.update_partial if payload.partial else repository.update_completed
+        )
+        await persist_fn(
+            report_id,
+            payload=insufficient_payload.model_dump(),
+            model="short_circuit",
+            prompt_version=PROMPT_VERSION,
+            message_count=message_count,
+            score=score,
+        )
+        return
+
     # 2. Sample conversations for LLM input budget.
     sampled = sample_conversations(payload)
 
@@ -444,12 +512,23 @@ def _compose(
     heatmap: list[HeatmapPeriod],
     llm_dict: dict[str, Any],
     benchmarks: list[BenchmarkMetric],
+    data_quality: str = "sufficient",
 ) -> ReportPayload:
+    # SentimentSlice precisa do campo "color" — quando vem do short-circuit
+    # com value=0 não tem color, então default lavender pros 3.
+    _SENTIMENT_COLOR = {"Positivo": "#FF6B35", "Neutro": "#B8A8D9", "Negativo": "#5C1D2E"}
+    sentiment_items = []
+    for s in llm_dict.get("sentiment", []):
+        name = s.get("name")
+        if "color" not in s and name in _SENTIMENT_COLOR:
+            s = {**s, "color": _SENTIMENT_COLOR[name]}
+        sentiment_items.append(SentimentSlice(**s))
     return ReportPayload(
         message_count=message_count,
         conversation_count=conversation_count,
         score=score,
         clinic_segment=clinic_segment,
+        data_quality=data_quality,
         diagnostic_summary=llm_dict.get("diagnostic_summary", ""),
         funnel=funnel,
         response_time_distribution=response_time,
@@ -457,7 +536,7 @@ def _compose(
         opportunities=[Opportunity(**o) for o in llm_dict.get("opportunities", [])],
         objections=[Objection(**o) for o in llm_dict.get("objections", [])],
         faqs=[FAQ(**f) for f in llm_dict.get("faqs", [])],
-        sentiment=[SentimentSlice(**s) for s in llm_dict.get("sentiment", [])],
+        sentiment=sentiment_items,
         benchmarks=benchmarks,
     )
 

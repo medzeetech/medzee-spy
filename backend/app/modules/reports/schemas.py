@@ -115,6 +115,12 @@ class ReportPayload(BaseModel):
     score: int = Field(ge=0, le=100)
     clinic_segment: Literal["saude", "odonto", "outro"]
 
+    # Sinaliza se o relatório tem dados suficientes pra análise real ou se é
+    # uma resposta "transparente" (curto-circuito quando faltou input). O
+    # frontend usa pra renderizar empty states honestos em vez de exibir
+    # números/insights que seriam chutados.
+    data_quality: Literal["sufficient", "insufficient"] = "sufficient"
+
     # LLM-generated diagnostic
     diagnostic_summary: str
 

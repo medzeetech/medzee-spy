@@ -1,17 +1,36 @@
 import { Sparkles } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
-import { FUNNEL as MOCK_FUNNEL } from '../../data/reportData.js';
 import SectionHeader from './SectionHeader.jsx';
+import SectionEmptyState from './SectionEmptyState.jsx';
 
 export default function FunnelSection({ funnel }) {
-  const data = funnel && funnel.length > 0 ? funnel : MOCK_FUNNEL;
+  const data = funnel && funnel.length > 0 ? funnel : null;
+  const totalInitial = data && data.length > 0 ? data[0].count : 0;
+  const finalCount = data && data.length > 0 ? data[data.length - 1].count : 0;
+
+  if (!data) {
+    return (
+      <section style={{ marginBottom: 56 }}>
+        <SectionHeader
+          kicker="01 — Saúde do funil"
+          title="Onde o paciente desiste"
+          sub="Mapeamento das etapas do atendimento até o agendamento."
+        />
+        <SectionEmptyState
+          title="Funil sem dados suficientes"
+          message="Pra mapear onde o paciente desiste, precisamos de pelo menos algumas conversas completas no período."
+          suggestion="Continue usando o WhatsApp da clínica normalmente. Mais conversas = funil mais preciso."
+        />
+      </section>
+    );
+  }
 
   return (
     <section style={{ marginBottom: 56 }}>
       <SectionHeader
         kicker="01 — Saúde do funil"
         title="Onde o paciente desiste"
-        sub="412 conversas iniciadas. Apenas 51 viraram agendamento. Cada etapa esconde uma fuga — algumas evitáveis."
+        sub={`${totalInitial} ${totalInitial === 1 ? 'conversa iniciada' : 'conversas iniciadas'}. ${finalCount} ${finalCount === 1 ? 'virou' : 'viraram'} agendamento.`}
       />
 
       <div
@@ -113,34 +132,57 @@ export default function FunnelSection({ funnel }) {
           })}
         </div>
 
-        <div
-          style={{
-            marginTop: 22,
-            paddingTop: 18,
-            borderTop: `1px dashed ${COLORS.hairline}`,
-          }}
-        >
-          <div className="flex items-start" style={{ gap: 12 }}>
+        {(() => {
+          // Maior gargalo = a maior queda entre 2 estágios consecutivos.
+          // Calculado a partir dos dados reais — sem mais "153 pacientes (53%)"
+          // hardcoded.
+          if (data.length < 2) return null;
+          let worstDropIdx = -1;
+          let worstDrop = 0;
+          for (let i = 1; i < data.length; i++) {
+            const drop = data[i - 1].pct - data[i].pct;
+            if (drop > worstDrop) {
+              worstDrop = drop;
+              worstDropIdx = i;
+            }
+          }
+          if (worstDropIdx === -1) return null;
+          const from = data[worstDropIdx - 1];
+          const to = data[worstDropIdx];
+          const dropCount = from.count - to.count;
+          return (
             <div
               style={{
-                width: 32,
-                height: 32,
-                borderRadius: 9,
-                background: COLORS.orangeSoft,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
+                marginTop: 22,
+                paddingTop: 18,
+                borderTop: `1px dashed ${COLORS.hairline}`,
               }}
             >
-              <Sparkles size={15} color={COLORS.orangeDeep} />
+              <div className="flex items-start" style={{ gap: 12 }}>
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 9,
+                    background: COLORS.orangeSoft,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                  }}
+                >
+                  <Sparkles size={15} color={COLORS.orangeDeep} />
+                </div>
+                <div style={{ fontSize: 13.5, color: COLORS.ink, lineHeight: 1.55 }}>
+                  <strong style={{ fontWeight: 700 }}>Maior gargalo:</strong> entre "{from.stage}" e "{to.stage}" — perdem-se{' '}
+                  <strong style={{ color: COLORS.orangeDeep, fontWeight: 700 }}>
+                    {dropCount} {dropCount === 1 ? 'paciente' : 'pacientes'} ({worstDrop.toFixed(1)}%)
+                  </strong>.
+                </div>
+              </div>
             </div>
-            <div style={{ fontSize: 13.5, color: COLORS.ink, lineHeight: 1.55 }}>
-              <strong style={{ fontWeight: 700 }}>Maior gargalo:</strong> entre "engajados" e "orçamento dado" — perdem-se{' '}
-              <strong style={{ color: COLORS.orangeDeep, fontWeight: 700 }}>153 pacientes (53%)</strong>. Geralmente porque o valor não é informado, ou é informado tarde demais.
-            </div>
-          </div>
-        </div>
+          );
+        })()}
       </div>
     </section>
   );

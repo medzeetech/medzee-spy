@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { COLORS } from '../../constants/colors.js';
-import { OPPORTUNITIES as MOCK_OPPORTUNITIES } from '../../data/reportData.js';
 import SectionHeader from './SectionHeader.jsx';
+import SectionEmptyState from './SectionEmptyState.jsx';
 
 const HEADERS = ['ID', 'Contexto', 'Por que perdeu', 'Valor est.', 'Quando'];
 
@@ -59,15 +59,31 @@ function Row({ row }) {
 }
 
 export default function OpportunitiesSection({ opportunities }) {
-  const data =
-    opportunities && opportunities.length > 0 ? opportunities : MOCK_OPPORTUNITIES;
+  const data = opportunities && opportunities.length > 0 ? opportunities : null;
+
+  if (!data) {
+    return (
+      <section style={{ marginBottom: 56 }}>
+        <SectionHeader
+          kicker="04 — Oportunidades perdidas"
+          title="Conversas que não viraram consulta"
+          sub="Casos onde houve interesse explícito sem follow-up adequado."
+        />
+        <SectionEmptyState
+          title="Nenhuma oportunidade perdida identificada na amostra"
+          message="Isso pode ser excelente — significa que cada interesse virou follow-up. OU os dados ainda são poucos pra identificar padrões."
+          suggestion="Conforme mais conversas acumulam, leads sem retorno ficam visíveis aqui automaticamente."
+        />
+      </section>
+    );
+  }
 
   return (
     <section style={{ marginBottom: 56 }}>
       <SectionHeader
         kicker="04 — Oportunidades perdidas"
         title="Conversas que não viraram consulta"
-        sub="Casos recentes onde houve interesse explícito e a clínica não fechou. Pacientes anonimizados."
+        sub={`${data.length} ${data.length === 1 ? 'caso identificado' : 'casos identificados'} com interesse explícito sem fechamento. Pacientes anonimizados.`}
       />
 
       <div
@@ -101,31 +117,6 @@ export default function OpportunitiesSection({ opportunities }) {
         {data.map((r) => (
           <Row key={r.tag} row={r} />
         ))}
-
-        <button
-          type="button"
-          style={{
-            width: '100%',
-            padding: '14px 18px',
-            border: 'none',
-            borderTop: `1px solid ${COLORS.hairline}`,
-            background: COLORS.cream,
-            color: COLORS.ink,
-            fontSize: 12.5,
-            fontWeight: 600,
-            cursor: 'pointer',
-            fontFamily: "'Red Hat Display', sans-serif",
-            transition: 'background 0.15s ease',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = COLORS.sunken;
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = COLORS.cream;
-          }}
-        >
-          Ver todas as 47 oportunidades perdidas ›
-        </button>
       </div>
     </section>
   );
