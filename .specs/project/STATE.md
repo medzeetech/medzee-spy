@@ -169,7 +169,7 @@
 - [ ] **B2 follow-up** — habilitar leaked password protection no Supabase (1 clique no Dashboard) antes de prod pública.
 - [x] ~~F5 last-N per chat + relatório sempre gera~~ — 2026-05-18. Spec em `.specs/features/f5-last-n-per-chat/`. Backend + frontend completos.
 - [x] ~~F5 smoke E2E~~ — confirmado 2026-05-19 (mesmo run do F4 smoke).
-- [ ] **F6 — DX & Docs** — README com setup local + script único pra subir backend+frontend+worker. Não bloqueia M1, mas vale antes de onboarding de outros devs.
+- [x] ~~**F6 — DX & Docs**~~ — 2026-05-19. README raiz, .env.example refinados, `package.json` raiz com `npm run dev` (concurrently), .gitignore atualizado.
 - [ ] **F7 — Route guards (opcional)** — guard de rota autenticada em `/app/*`. Pequeno (~30min). Não bloqueia M1.
 
 ## Ideias adiadas

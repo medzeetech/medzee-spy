@@ -1,7 +1,7 @@
 # Roadmap
 
 **Current Milestone:** M1 — Fluxo ponta a ponta funcional
-**Status:** ✅ COMPLETE smoke E2E em prod (2026-05-19). F1 deprecated · F2/F3/F4/F5 ✅ done · F6/F7 not started.
+**Status:** ✅ COMPLETE smoke E2E em prod (2026-05-19). F1 deprecated · F2/F3/F4/F5/F6 ✅ done · F7 (route guards opcional) pendente.
 
 ---
 
@@ -84,9 +84,11 @@ sem mudança.
 
 **Commits-chave:** `abb01aa` (F4 specs), `e0c06f9` (F5 spec+code), `3ca748e` (fixes smoke F4), `351ec41` (dashboard LiveStats), `fe1ea8c` (stats count exact + period_days fix), `ad64b99` (RPC window function), `191f0e8` (ReportTopbar real), `85f88df` (contagem animada).
 
-**F6 — DX & Docs** — PLANNED
-- README com setup local (backend + frontend + sidecar) e `.env` documentado
-- Script único `make dev` ou `pnpm dev` que sobe os 3 serviços
+**F6 — DX & Docs** — ✅ COMPLETE (2026-05-19)
+- `README.md` na raiz: visão geral, stack, setup local passo-a-passo, migrações, estrutura, fluxos, comandos úteis, deploy, troubleshooting
+- `backend/.env.example` e `frontend/.env.example` refinados com todos os campos atuais + comentários explicativos + referências a decisões/lições do STATE
+- `package.json` raiz com `npm run dev` (sobe backend + frontend em paralelo via `concurrently`) + scripts `install:all`, `test:backend`, `lint:frontend`, `build:frontend`
+- `.gitignore` atualizado pra `node_modules/`, `frontend/dist/`, logs
 
 **F7 — Route guards (opcional)** — guard de rota autenticada em /app/*. Resíduo do plano original F4 "Frontend Integration" não absorvido por F2/F3. Pequeno (~30 min). Não bloqueia M1 mas vale fazer antes de prod pública.
 
