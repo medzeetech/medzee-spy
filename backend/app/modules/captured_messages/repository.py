@@ -229,17 +229,20 @@ async def query_window_for_user(
     return parsed
 
 
-def _compute_stats(rows: list[dict]) -> dict[str, Any]:
-    """Reduce a list of message rows to ``{message_count, conversation_count,
-    last_message_at}``.
+def _compute_stats_from_sample(
+    rows: list[dict], total_count: int
+) -> dict[str, Any]:
+    """Build stats dict de uma amostra (max ~1000 rows) + total exato.
 
-    Computed client-side: supabase-py / PostgREST does not expose ``DISTINCT``
-    aggregations cleanly without a stored function, and the captured_messages
-    rows are small (chat id + timestamp). For the volumes we deal with
-    (single-user window) one full scan is fine — if this ever becomes a hot
-    path we can promote it to a Postgres view or RPC.
+    **Fix 2026-05-19**: PostgREST limita Range a 0-999 por default. A versão
+    antiga contava ``len(rows)`` direto, retornando 1000 mesmo com 8.6k
+    msgs reais no DB. Agora ``total_count`` vem de ``count="exact"`` no
+    select e é a fonte de verdade pro ``message_count``.
+
+    ``conversation_count`` e ``last_message_at`` são derivados da amostra
+    (subestimação aceitável em corner cases com >1000 msgs).
     """
-    if not rows:
+    if total_count == 0 and not rows:
         return {
             "message_count": 0,
             "conversation_count": 0,
@@ -254,8 +257,6 @@ def _compute_stats(rows: list[dict]) -> dict[str, Any]:
         ts_raw = row.get("ts")
         if ts_raw is None:
             continue
-        # PostgREST returns ISO 8601 strings; parse defensively in case the
-        # driver ever hands us a datetime directly.
         if isinstance(ts_raw, datetime):
             ts = ts_raw
         else:
@@ -263,7 +264,7 @@ def _compute_stats(rows: list[dict]) -> dict[str, Any]:
         if last_ts is None or ts > last_ts:
             last_ts = ts
     return {
-        "message_count": len(rows),
+        "message_count": total_count,
         "conversation_count": len(chatids),
         "last_message_at": last_ts,
     }
@@ -291,12 +292,17 @@ async def query_last_n_per_chat(
     def _run() -> Any:
         # Limita por user_id; sem cutoff temporal. Ordena por (wa_chatid, ts desc)
         # pra pegar fácil os últimos N por chat.
+        #
+        # Limit alto explícito: PostgREST tem default Range 0-999 que truncaria
+        # um user com 50+ chats * 30 msgs = 1500 linhas. 10_000 cobre folgadamente
+        # até ~330 chats × 30 msgs; pra além disso, virar window function SQL.
         return (
             _table()
             .select("*")
             .eq("user_id", str(user_id))
             .order("wa_chatid", desc=False)
             .order("ts", desc=True)
+            .limit(10_000)
             .execute()
         )
 
@@ -331,25 +337,33 @@ async def stats_for_user(user_id: UUID) -> dict:
     """Return aggregate stats over **all** captured messages for a user.
 
     Shape: ``{message_count: int, conversation_count: int,
-    last_message_at: datetime | None}``. ``conversation_count`` is the
-    number of distinct ``wa_chatid`` values.
+    last_message_at: datetime | None}``.
 
-    Empty result is ``{0, 0, None}`` — see :func:`_compute_stats`.
+    Usa ``count="exact"`` (PostgREST header ``Prefer: count=exact``) pra
+    obter o ``message_count`` REAL sem truncar no limite default de 1000
+    rows por request. A amostra ordenada por ``ts desc`` é usada pra
+    derivar ``conversation_count`` + ``last_message_at``.
     """
     result = await asyncio.to_thread(
         lambda: _table()
-        .select("wa_chatid,ts")
+        .select("wa_chatid,ts", count="exact")
         .eq("user_id", str(user_id))
+        .order("ts", desc=True)
+        .limit(1000)
         .execute()
     )
     rows: list[dict] = getattr(result, "data", None) or []
-    stats = _compute_stats(rows)
+    total = getattr(result, "count", None)
+    if total is None:
+        total = len(rows)
+    stats = _compute_stats_from_sample(rows, total)
     logger.info(
         "repo.captured.stats_for_user",
         extra={
             "user_id": str(user_id),
             "message_count": stats["message_count"],
             "conversation_count": stats["conversation_count"],
+            "sample_rows": len(rows),
         },
     )
     return stats
@@ -358,25 +372,29 @@ async def stats_for_user(user_id: UUID) -> dict:
 async def stats_for_session(session_id: UUID) -> dict:
     """Return aggregate stats scoped to a single WhatsApp session.
 
-    Same response shape as :func:`stats_for_user`. Used by
-    ``GET /api/whatsapp/status`` to surface "messages captured so far" for
-    the currently-connected session without leaking historical counts from
-    a previous re-pair.
+    Mesma estratégia que :func:`stats_for_user` — ``count="exact"`` pra
+    evitar truncamento em 1000 rows.
     """
     result = await asyncio.to_thread(
         lambda: _table()
-        .select("wa_chatid,ts")
+        .select("wa_chatid,ts", count="exact")
         .eq("whatsapp_session_id", str(session_id))
+        .order("ts", desc=True)
+        .limit(1000)
         .execute()
     )
     rows: list[dict] = getattr(result, "data", None) or []
-    stats = _compute_stats(rows)
+    total = getattr(result, "count", None)
+    if total is None:
+        total = len(rows)
+    stats = _compute_stats_from_sample(rows, total)
     logger.info(
         "repo.captured.stats_for_session",
         extra={
             "whatsapp_session_id": str(session_id),
             "message_count": stats["message_count"],
             "conversation_count": stats["conversation_count"],
+            "sample_rows": len(rows),
         },
     )
     return stats

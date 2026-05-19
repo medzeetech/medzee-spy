@@ -19,7 +19,7 @@ import {
 } from 'recharts';
 import {
   TrendingUp, TrendingDown, Clock, MessageCircle, Target, Users, FileText,
-  Wifi, Hash, Zap,
+  Wifi, Hash,
 } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import { listReports, getReport } from '../../lib/reports.js';
@@ -94,12 +94,18 @@ function MetricCard({ label, value, unit, trend, positive, Icon, color }) {
   );
 }
 
-function LiveStatsRow({ chatCount, uazapiMessageCount, capturedCount }) {
-  // Card horizontal com as 3 contagens "ao vivo" — vem direto do uazapi
-  // /chat/find (não depende do nosso webhook). Renderiza SEMPRE que o user
-  // tem WhatsApp conectado, independente de ter relatórios. Resposta:
-  // o dashboard agora reflete dados reais (54 conversas, etc) mesmo quando
-  // o último relatório foi insufficient/zerado.
+function LiveStatsRow({ chatCount, capturedCount, lastMessageAt }) {
+  // 3 contagens reais do estado WhatsApp:
+  //   - chatCount: uazapi /chat/find totalChatsStats.total_chats (ao vivo)
+  //   - capturedCount: nosso captured_messages.stats_for_session
+  //     (TUDO que o webhook persistiu, soma cumulativa)
+  //   - lastMessageAt: timestamp da última msg recebida via webhook
+  //
+  // uazapi free NÃO retorna total_messages no totalChatsStats — só dá
+  // total/unread por bucket (chats abertos, arquivados, grupos). Por isso
+  // o source de verdade pra "quantas msgs temos" é captured_messages.
+  const lastMsgLabel = formatRelativeShort(lastMessageAt) || '—';
+
   const cards = [
     {
       label: 'Conversas no WhatsApp',
@@ -108,14 +114,14 @@ function LiveStatsRow({ chatCount, uazapiMessageCount, capturedCount }) {
       color: COLORS.wa,
     },
     {
-      label: 'Mensagens (total uazapi)',
-      value: uazapiMessageCount.toLocaleString('pt-BR'),
+      label: 'Mensagens capturadas',
+      value: capturedCount.toLocaleString('pt-BR'),
       Icon: Hash,
       color: COLORS.lavender,
     },
     {
-      label: 'Capturadas localmente',
-      value: capturedCount.toLocaleString('pt-BR'),
+      label: 'Última mensagem',
+      value: lastMsgLabel,
       Icon: Wifi,
       color: COLORS.orange,
     },
@@ -367,7 +373,7 @@ export default function DashboardPage() {
   const uazapiStats = useUazapiStats({ enabled: true });
   const capturedCount = waStatus?.message_count ?? 0;
   const chatCount = uazapiStats?.stats?.chat_count ?? 0;
-  const uazapiMessageCount = uazapiStats?.stats?.message_count ?? 0;
+  const lastMessageAt = waStatus?.last_message_at ?? null;
   const dbConnected = Boolean(waStatus?.connected);
   const uazapiConnected = chatCount > 0;
   const isConnected = dbConnected || uazapiConnected;
@@ -450,12 +456,12 @@ export default function DashboardPage() {
 
   // LiveStatsRow renderiza SEMPRE que o user tem WhatsApp conectado —
   // independente de ter relatórios completed. Garante que o dashboard
-  // sempre reflete o estado real do WhatsApp (54 conversas, etc).
+  // sempre reflete o estado real do WhatsApp (conversas + msgs capturadas).
   const liveStatsRow = isConnected ? (
     <LiveStatsRow
       chatCount={chatCount}
-      uazapiMessageCount={uazapiMessageCount}
       capturedCount={capturedCount}
+      lastMessageAt={lastMessageAt}
     />
   ) : null;
 

@@ -107,21 +107,23 @@ class ReportService:
             user_id=user_id,
             clinic_segment=clinic_segment,
         )
-        # Lembrar o "tamanho" da coleta pra exibir na lista. Pro modo
-        # last_n_per_chat usamos n_per_chat; pro window_days usamos period_days.
-        sentinel_days = period_days if mode == "window_days" else n_per_chat
-        try:
-            await repository.update_period_days(report_id, sentinel_days)
-        except Exception:
-            logger.warning(
-                "service.reports.update_period_days_failed",
-                extra={
-                    "report_id": str(report_id),
-                    "mode": mode,
-                    "sentinel_days": sentinel_days,
-                },
-                exc_info=True,
-            )
+        # F5: só atualiza period_days quando o mode usa janela temporal.
+        # A coluna `reports.period_days` tem CHECK (period_days IN (7,15,30,60))
+        # — passar n_per_chat (10/20/30/50) viola 23514. Pro modo last_n_per_chat
+        # deixa period_days NULL (= "não se aplica, é últimas N por conversa").
+        if mode == "window_days":
+            try:
+                await repository.update_period_days(report_id, period_days)
+            except Exception:
+                logger.warning(
+                    "service.reports.update_period_days_failed",
+                    extra={
+                        "report_id": str(report_id),
+                        "mode": mode,
+                        "period_days": period_days,
+                    },
+                    exc_info=True,
+                )
 
         logger.info(
             "service.reports.trigger_generate",

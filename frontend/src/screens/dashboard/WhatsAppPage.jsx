@@ -405,10 +405,15 @@ function StaleWarning() {
 }
 
 function ConnectedCard({ status, uazapiStats, onDisconnect, disconnecting }) {
-  // Fontes ao vivo via /chat/find (provider) — mais confiável que o snapshot
-  // local de captured_messages. Default 0 enquanto o primeiro poll não chega.
+  // Fontes:
+  //   - chatCount: uazapi /chat/find totalChatsStats.total_chats (ao vivo)
+  //   - messageCount: captured_messages.stats_for_session (snapshot local,
+  //     soma de TUDO que o webhook persistiu). uazapi free NÃO retorna
+  //     total_messages no totalChatsStats — então confiar no nosso DB é a
+  //     única opção. Bug observado 2026-05-19: front mostrava "0 mensagens"
+  //     mesmo com 8.6k msgs em captured_messages porque lia do source errado.
   const chatCount = uazapiStats?.stats?.chat_count ?? 0;
-  const messageCount = uazapiStats?.stats?.message_count ?? 0;
+  const messageCount = status?.message_count ?? 0;
   const hasMessages = messageCount > 0;
   const stale = hasMessages && isStale(status.last_message_at);
 
