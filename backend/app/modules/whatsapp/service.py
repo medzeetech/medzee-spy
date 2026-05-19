@@ -1006,30 +1006,27 @@ class WhatsAppService:
             )
             return None
 
-        # 1b. F1 reativado: criar placeholder de reports pra frontend já
-        # polar /api/reports/latest e ver status='generating' enquanto o
-        # extract worker corre. Se o worker já criou row antes (race raríssimo
-        # — extract < signup), só linka user_id. clinic_segment fica 'outro'
-        # provisoriamente; o worker NÃO sobrescreve no path de reuse, então
-        # tá ok manter o default (LLM ainda recebe segment correto via
-        # _resolve_clinic_segment no _inner).
+        # 1b. F7 fix (2026-05-19): REMOVIDO o placeholder de report que era
+        # criado aqui (legado F1). Causava dois reports simultâneos quando
+        # o frontend (F7) também disparava generateReport pós-signup —
+        # confirmado em prod pelo user. Agora a CRIAÇÃO de report é
+        # responsabilidade exclusiva do `POST /api/reports/generate` (que
+        # o frontend dispara via F7 ou via botão "Gerar relatório").
+        # consume_extracted só linka user_id e (best-effort) puxa payload
+        # do store em memória se houver.
+        #
+        # Caso edge: se uma row de report já existe pra essa session
+        # (worker antigo F1, hot-reload, etc.), ainda linka o user_id pra
+        # não quebrar RLS. Mas NÃO cria nada novo.
         try:
             from app.modules.reports import repository as reports_repo
-            from app.workers.report import _resolve_clinic_segment
 
             existing = await reports_repo.get_existing_for_session(session_id)
-            if existing is None:
-                clinic_segment = await _resolve_clinic_segment(user_id)
-                await reports_repo.create_generating(
-                    whatsapp_session_id=session_id,
-                    user_id=user_id,
-                    clinic_segment=clinic_segment,
-                )
-            else:
+            if existing is not None:
                 await reports_repo.link_user(session_id, user_id)
         except Exception:
             logger.warning(
-                "service.consume_extracted.report_placeholder_failed",
+                "service.consume_extracted.report_link_failed",
                 extra={
                     "op": "consume_extracted",
                     "session_id": str(session_id),
