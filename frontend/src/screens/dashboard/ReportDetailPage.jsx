@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, Info, RefreshCw, WifiOff } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import { useReportPolling } from '../../lib/reports.js';
+import { useMe } from '../../lib/me.js';
 import ReportGeneratingState from './ReportGeneratingState.jsx';
 import ReportTopbar from '../../components/report/ReportTopbar.jsx';
 import HeroCard from '../../components/report/HeroCard.jsx';
@@ -173,7 +174,7 @@ function FailedCard({ errorCode }) {
   );
 }
 
-function ReportContent({ partial, payload }) {
+function ReportContent({ partial, payload, createdAt, ownerName }) {
   const p = payload ?? {};
 
   // Métricas derivadas — cruzam o payload pra alimentar o HeroCard sem
@@ -191,7 +192,14 @@ function ReportContent({ partial, payload }) {
   })();
 
   const animatedChildren = [
-    <ReportTopbar key="topbar" />,
+    <ReportTopbar
+      key="topbar"
+      ownerName={ownerName}
+      clinicSegment={p.clinic_segment}
+      messageCount={p.message_count}
+      conversationCount={p.conversation_count}
+      createdAt={createdAt}
+    />,
     <HeroCard
       key="hero"
       score={p.score}
@@ -258,6 +266,11 @@ export default function ReportDetailPage() {
   const { id } = useParams();
   const pollingKey = id === 'latest' ? 'latest' : id;
   const state = useReportPolling(pollingKey);
+  const { me } = useMe();
+  // Nome a exibir: prefere users_profile.name; senão usa o local-part do email.
+  const ownerName =
+    me?.name?.trim() ||
+    (me?.email ? me.email.split('@')[0] : null);
 
   // Sessão expirou em background — manda pra /login preservando o redirect.
   useEffect(() => {
@@ -291,7 +304,12 @@ export default function ReportDetailPage() {
   return (
     <div>
       <BackButton onClick={() => navigate('/app/reports')} />
-      <ReportContent partial={state.status === 'partial'} payload={state.payload} />
+      <ReportContent
+        partial={state.status === 'partial'}
+        payload={state.payload}
+        createdAt={state.createdAt}
+        ownerName={ownerName}
+      />
     </div>
   );
 }

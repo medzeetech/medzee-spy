@@ -40,6 +40,7 @@ export function useReportPolling(idOrLatest = 'latest') {
     error: null,
     elapsedMs: 0,
     reportId: null,
+    createdAt: null,
   });
 
   const startRef = useRef(Date.now());
@@ -97,6 +98,7 @@ export function useReportPolling(idOrLatest = 'latest') {
           error: data.error_code ?? null,
           elapsedMs: elapsed,
           reportId: data.id ?? null,
+          createdAt: data.created_at ?? null,
         });
         if (!TERMINAL.has(data.status)) {
           schedule();
