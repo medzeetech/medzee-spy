@@ -592,12 +592,36 @@ class WhatsAppService:
             await self._store.publish(
                 session_id, SSEEvent(name="connected", data={"phone": phone})
             )
-            # F8 REVOGADO (2026-05-19): auto-dispatch no webhook 'connected'
-            # complicou demais (race conditions com user_id NULL, ignorava
-            # captured_messages). Decisão pragmática: voltar pro fluxo
-            # manual onde user clica "Gerar relatório" no dashboard pós-
-            # signup. Caminho sempre funciona em ~17s.
-            # Vide ReportsListPage.handleGenerate.
+            # F9 (2026-05-19): trigger persistente pra popular captured_messages.
+            # Roda em background enquanto user preenche LeadForm (signup linka
+            # user_id depois). Loop interno aguarda user_id, depois faz ciclos
+            # de pull + insert até captured_messages ter dados (até 30min).
+            # Quando user clica "Gerar relatório" pós-login, ReportService já
+            # encontra dados em captured_messages → caminho rápido (~17s) sem
+            # warmup uazapi.
+            try:
+                from app.workers.extract import fill_captured_messages_loop
+                asyncio.create_task(
+                    fill_captured_messages_loop(session_id),
+                    name=f"fill-cm-{session_id}",
+                )
+                logger.info(
+                    "service.webhook.fill_loop_dispatched",
+                    extra={
+                        "op": "handle_webhook_event",
+                        "session_id": str(session_id),
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "service.webhook.fill_loop_dispatch_failed",
+                    extra={
+                        "op": "handle_webhook_event",
+                        "session_id": str(session_id),
+                    },
+                    exc_info=True,
+                )
+
             logger.info(
                 "service.webhook.connected",
                 extra={
@@ -1019,6 +1043,50 @@ class WhatsAppService:
         except Exception:
             logger.warning(
                 "service.consume_extracted.report_link_failed",
+                extra={
+                    "op": "consume_extracted",
+                    "session_id": str(session_id),
+                    "user_id": str(user_id),
+                },
+                exc_info=True,
+            )
+
+        # F9 (2026-05-19): re-dispatch fill loop pra cobrir restart do backend
+        # entre webhook 'connected' e signup. A task original (criada em
+        # _handle_connection_event) morreu junto com o processo. O loop é
+        # idempotente: confere stats_for_session ANTES de pull e sai cedo se
+        # captured_messages já tiver dados.
+        try:
+            from app.modules.captured_messages import repository as cm_repo
+            from app.workers.extract import fill_captured_messages_loop
+
+            cm_stats = await cm_repo.stats_for_session(session_id)
+            if cm_stats.get("message_count", 0) == 0:
+                asyncio.create_task(
+                    fill_captured_messages_loop(session_id),
+                    name=f"fill-cm-resume-{session_id}",
+                )
+                logger.info(
+                    "service.consume_extracted.fill_loop_dispatched",
+                    extra={
+                        "op": "consume_extracted",
+                        "session_id": str(session_id),
+                        "user_id": str(user_id),
+                    },
+                )
+            else:
+                logger.info(
+                    "service.consume_extracted.captured_already_populated",
+                    extra={
+                        "op": "consume_extracted",
+                        "session_id": str(session_id),
+                        "user_id": str(user_id),
+                        "message_count": cm_stats.get("message_count"),
+                    },
+                )
+        except Exception:
+            logger.warning(
+                "service.consume_extracted.fill_loop_dispatch_failed",
                 extra={
                     "op": "consume_extracted",
                     "session_id": str(session_id),
