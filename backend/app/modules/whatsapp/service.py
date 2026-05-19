@@ -969,19 +969,13 @@ class WhatsAppService:
             },
         )
 
-        state = await self._store.get(session_id)
-        if state is None:
-            logger.warning(
-                "service.consume_extracted.unknown_session",
-                extra={
-                    "op": "consume_extracted",
-                    "session_id": str(session_id),
-                    "elapsed_ms": int((time.monotonic() - started) * 1000),
-                },
-            )
-            return None
-
-        # 1. Link user (will be required for RLS on future reads).
+        # 1. Link user na DB SEMPRE — mesmo se o session_store em memória
+        # tiver perdido o state (reinício do Railway entre connect e signup).
+        # Bug observado em prod (2026-05-19 01:51:23): row whatsapp_sessions
+        # existia no DB com status=connected mas user_id=NULL porque o
+        # consume_extracted retornava early quando state era None. Resultado:
+        # /api/whatsapp/status (filtra por user_id) nunca achava a session →
+        # frontend mostrava "WhatsApp não conectado" mesmo com uazapi vivo.
         try:
             await repository.link_user(session_id, user_id)
         except Exception:  # pragma: no cover — defensive
@@ -993,6 +987,24 @@ class WhatsAppService:
                     "user_id": str(user_id),
                 },
             )
+
+        state = await self._store.get(session_id)
+        if state is None:
+            # Store em memória zerou (provável reinício do backend). DB já
+            # foi linkado acima — frontend vai ver session ativa no /status.
+            # Sem state em memória não há payload pra devolver nem SSE pra
+            # publicar, mas o user segue com a session funcional.
+            logger.warning(
+                "service.consume_extracted.unknown_session_db_linked",
+                extra={
+                    "op": "consume_extracted",
+                    "session_id": str(session_id),
+                    "user_id": str(user_id),
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    "note": "DB linkado, store em memória vazio (provável restart)",
+                },
+            )
+            return None
 
         # 1b. F1 reativado: criar placeholder de reports pra frontend já
         # polar /api/reports/latest e ver status='generating' enquanto o
