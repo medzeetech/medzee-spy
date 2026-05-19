@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { FileText, Clock, Zap, CalendarClock, Settings2, Check } from 'lucide-react';
+import { FileText, Clock, Zap, CalendarClock, Settings2, Check, Loader2 } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
-import { listReports } from '../../lib/reports.js';
+import { listReports, generateReport } from '../../lib/reports.js';
 import { useWhatsappStatus } from '../../lib/whatsapp.js';
-import GenerateReportModal from './GenerateReportModal.jsx';
+
+// F5: default fixo do n_per_chat (alinhado ao 'Recomendado' do modal antigo).
+// O modal de seleção foi removido 2026-05-19 pra simplificar UX: clique único
+// no botão dispara direto a geração.
+const DEFAULT_N_PER_CHAT = 30;
 
 const FREQUENCY_OPTIONS = [
   { label: '7 dias', value: 7 },
@@ -83,7 +87,27 @@ export default function ReportsListPage() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [modalOpen, setModalOpen] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState(null);
+
+  const handleGenerate = async () => {
+    if (generating) return;
+    setGenerating(true);
+    setGenerateError(null);
+    try {
+      const result = await generateReport({ n_per_chat: DEFAULT_N_PER_CHAT });
+      navigate(`/app/reports/${result.report_id}`);
+    } catch (e) {
+      if (e?.status === 429) {
+        const match = /retry_in_(\d+)s/.exec(e.detail || '');
+        const secs = match ? match[1] : '60';
+        setGenerateError(`Aguarde ${secs} segundos antes de gerar de novo.`);
+      } else {
+        setGenerateError('Não foi possível gerar agora. Tente novamente.');
+      }
+      setGenerating(false);
+    }
+  };
 
   // Estado real da conexão WhatsApp pra empty state inteligente.
   const { status: waStatus, loading: waLoading } = useWhatsappStatus();
@@ -126,34 +150,57 @@ export default function ReportsListPage() {
         </div>
         <button
           type="button"
-          onClick={() => setModalOpen(true)}
+          onClick={handleGenerate}
+          disabled={generating}
           className="inline-flex items-center transition-all"
           style={{
             gap: 8,
             padding: '10px 18px',
             borderRadius: 12,
             border: 'none',
-            background: `linear-gradient(135deg, ${COLORS.orange}, ${COLORS.orangeDeep})`,
+            background: generating
+              ? 'rgba(255,107,53,0.5)'
+              : `linear-gradient(135deg, ${COLORS.orange}, ${COLORS.orangeDeep})`,
             color: COLORS.cream,
             fontSize: 13.5,
             fontWeight: 700,
-            cursor: 'pointer',
+            cursor: generating ? 'wait' : 'pointer',
             fontFamily: "'Red Hat Display', sans-serif",
             boxShadow: '0 6px 20px -6px rgba(255,107,53,0.4)',
           }}
           onMouseEnter={(e) => {
+            if (generating) return;
             e.currentTarget.style.transform = 'translateY(-1px)';
             e.currentTarget.style.boxShadow = '0 10px 28px -6px rgba(255,107,53,0.55)';
           }}
           onMouseLeave={(e) => {
+            if (generating) return;
             e.currentTarget.style.transform = 'translateY(0)';
             e.currentTarget.style.boxShadow = '0 6px 20px -6px rgba(255,107,53,0.4)';
           }}
         >
-          <Zap size={14} />
-          Gerar relatório
+          {generating ? <Loader2 size={14} className="anim-spin" /> : <Zap size={14} />}
+          {generating ? 'Gerando…' : 'Gerar relatório'}
         </button>
       </div>
+
+      {generateError && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: 16,
+            padding: '10px 14px',
+            borderRadius: 10,
+            background: 'rgba(92,29,46,0.08)',
+            border: '1px solid rgba(92,29,46,0.25)',
+            color: COLORS.wine,
+            fontSize: 13,
+            fontWeight: 500,
+          }}
+        >
+          {generateError}
+        </div>
+      )}
 
       {/* Frequency config */}
       <div
@@ -447,14 +494,6 @@ export default function ReportsListPage() {
         </div>
       )}
 
-      <GenerateReportModal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        onSuccess={(reportId) => {
-          setModalOpen(false);
-          navigate(`/app/reports/${reportId}`);
-        }}
-      />
     </div>
   );
 }
