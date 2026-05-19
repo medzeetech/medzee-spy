@@ -1,33 +1,32 @@
-import { useEffect, useRef, useState } from 'react';
 import { Sparkles, MessageCircle, Brain, Wifi } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import { useUazapiStats, useWhatsappStatus } from '../../lib/whatsapp.js';
 
-// F5: 3 fases reais + contagem animada de msgs.
+// F5: 3 fases reais + contagem de msgs derivada da porcentagem.
 //
 // Fase 1: COLETANDO        — uazapiStats.chat_count (real, ao vivo)
-//                            + msgs animadas de 0 → totalCaptured em ~3s
-// Fase 2: SINCRONIZANDO    — chat_count > 0, animação já terminou,
-//                            mostra total real (vem do captured_messages
-//                            via /api/whatsapp/status)
+//                            + msgs cresce proporcional a pct (mesma curva
+//                            da barra de progresso → UX coesa)
+// Fase 2: SINCRONIZANDO    — chat_count > 0, msgs no total real
+//                            (vem do captured_messages via /whatsapp/status)
 // Fase 3: IA ANALISANDO    — backend já recebeu payload, LLM rodando
 //                            (heurística temporal — uazapiStats não revela isso)
 //
 // O elapsedMs vem do polling de /api/reports/{id}; >=30s presume LLM.
 //
-// A contagem de mensagens animada é DELIBERADA (não é mock): o total real
-// vem do snapshot captured_messages, mas a UX simula a leitura
-// progressivamente em ~3s pra dar feedback visual de "lendo agora".
-// Quando atinge o total, congela no número certo.
+// A contagem visualmente cresce sincronizada com a porcentagem (mesma
+// derivação temporal), não em curva própria — o user vê "8.623 mensagens"
+// chegar no exato instante em que a barra atinge 50% (fim da fase PULL).
+// Daí em diante (LLM/FINALIZING) congela no total real enquanto a barra
+// continua subindo (mas é o LLM agora, não mais leitura).
 
 const PHASE_PULL = 'pull';
 const PHASE_LLM = 'llm';
 const PHASE_FINALIZING = 'finalizing';
 
-// Duração da animação de contagem (de 0 → total).
-const COUNT_ANIMATION_MS = 3000;
-// Frequência de tick: 60ms ≈ 50 frames em 3s — smooth sem custar nada.
-const COUNT_TICK_MS = 60;
+// Fase PULL termina em pct=50% (ver computeProgress). A contagem de msgs
+// é normalizada por esse 50% pra atingir 100% no fim da fase PULL.
+const PULL_END_PCT = 50;
 
 function pickPhase(elapsedMs, hasData) {
   if (elapsedMs < 30_000) return hasData ? PHASE_PULL : PHASE_PULL;
@@ -60,64 +59,14 @@ function StatPill({ Icon, value, label, highlight }) {
   );
 }
 
-// Hook que anima um contador de 0 → target em duração fixa. Quando target
-// mudar (ex.: polling refresh do status sobe), continua de onde está e
-// re-ajusta o passo. Idempotente: chamadas com mesmo target não reiniciam.
-//
-// Nota implementação: o reset pra 0 quando target=0 não vai num setValue
-// no body do effect (lint react/set-state-in-effect). Em vez disso, o
-// próprio interval cuida do display: enquanto target=0, o effect nem
-// arranca, e o último valor anterior fica congelado. Quando target sobe,
-// arranca a animação a partir do valor atual.
-function useAnimatedCount(target) {
-  const [value, setValue] = useState(0);
-  const startRef = useRef(null);
-  const startValueRef = useRef(0);
-
-  useEffect(() => {
-    if (target <= 0) {
-      // Sem animação: o display fica no último valor. Não setState aqui.
-      return undefined;
-    }
-    // Snapshot do estado atual no momento que arranca a animação.
-    startRef.current = Date.now();
-    let startValue = startValueRef.current;
-    setValue((prev) => {
-      startValue = prev;
-      startValueRef.current = prev;
-      return prev;
-    });
-
-    const handle = setInterval(() => {
-      const elapsed = Date.now() - startRef.current;
-      const ratio = Math.min(1, elapsed / COUNT_ANIMATION_MS);
-      // Ease-out: rápido no começo, suaviza no fim.
-      const eased = 1 - Math.pow(1 - ratio, 2);
-      const next = Math.floor(startValue + (target - startValue) * eased);
-      setValue(next >= target ? target : next);
-      if (ratio >= 1) {
-        clearInterval(handle);
-      }
-    }, COUNT_TICK_MS);
-
-    return () => clearInterval(handle);
-  }, [target]);
-
-  return value;
-}
-
 export default function ReportGeneratingState({ elapsedMs = 0 }) {
   // 2 fontes:
   //   - useUazapiStats: chat_count ao vivo via uazapi /chat/find
-  //   - useWhatsappStatus: message_count do captured_messages (total
-  //     real persistido localmente — é esse que animamos)
+  //   - useWhatsappStatus: message_count do captured_messages (total real)
   const uazapiStats = useUazapiStats({ enabled: true, intervalMs: 3000 });
   const { status: waStatus } = useWhatsappStatus();
   const chatCount = uazapiStats?.stats?.chat_count ?? 0;
   const totalCapturedMsgs = waStatus?.message_count ?? 0;
-
-  // Anima 0 → total em ~3s. Quando totalCapturedMsgs é 0, fica em 0.
-  const animatedMsgCount = useAnimatedCount(totalCapturedMsgs);
 
   const hasData = chatCount > 0 || totalCapturedMsgs > 0;
   const phase = pickPhase(elapsedMs, hasData);
@@ -126,38 +75,46 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
   // 90s+ = 90-98% (finalizing). Cap em 98%.
   let pct;
   if (phase === PHASE_PULL) {
-    pct = Math.min(50, (elapsedMs / 30_000) * 50);
+    pct = Math.min(PULL_END_PCT, (elapsedMs / 30_000) * PULL_END_PCT);
   } else if (phase === PHASE_LLM) {
-    pct = 50 + Math.min(40, ((elapsedMs - 30_000) / 60_000) * 40);
+    pct = PULL_END_PCT + Math.min(40, ((elapsedMs - 30_000) / 60_000) * 40);
   } else {
     pct = 90 + Math.min(8, ((elapsedMs - 90_000) / 60_000) * 8);
   }
   pct = Math.round(pct);
+
+  // Contagem de msgs DERIVADA da porcentagem da barra. Normalizada por
+  // PULL_END_PCT (50%) pra atingir totalCapturedMsgs no exato instante
+  // em que a fase PULL termina e a barra cruza 50%. Após isso (LLM/
+  // FINALIZING) congela no total real enquanto a barra continua subindo.
+  // Resultado: contagem e barra crescem em sincronia visual — sem dois
+  // ritmos competindo.
+  let displayedMsgs;
+  if (phase === PHASE_PULL) {
+    const pullRatio = Math.min(1, pct / PULL_END_PCT);
+    displayedMsgs = Math.floor(totalCapturedMsgs * pullRatio);
+  } else {
+    displayedMsgs = totalCapturedMsgs;
+  }
 
   let headline;
   let subline;
   if (phase === PHASE_PULL) {
     headline = hasData ? 'Lendo suas conversas…' : 'Conectando ao WhatsApp…';
     if (totalCapturedMsgs > 0) {
-      subline = `Lendo ${animatedMsgCount.toLocaleString('pt-BR')} de ${totalCapturedMsgs.toLocaleString('pt-BR')} mensagens em ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'}.`;
+      subline = `Lendo ${displayedMsgs.toLocaleString('pt-BR')} de ${totalCapturedMsgs.toLocaleString('pt-BR')} mensagens em ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'}.`;
     } else if (chatCount > 0) {
       subline = `Já vimos ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} no seu WhatsApp.`;
     } else {
       subline = 'Buscando a lista de conversas no seu WhatsApp.';
     }
   } else if (phase === PHASE_LLM) {
-    const msgs = totalCapturedMsgs || animatedMsgCount;
     headline = 'IA analisando o conteúdo…';
-    subline = `Cruzando ${msgs.toLocaleString('pt-BR')} mensagens de ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} pra gerar insights.`;
+    subline = `Cruzando ${totalCapturedMsgs.toLocaleString('pt-BR')} mensagens de ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} pra gerar insights.`;
   } else {
     headline = 'Finalizando seu diagnóstico…';
     subline = 'Montando funil, oportunidades perdidas e benchmarks.';
   }
-
-  // O valor exibido na pill de msgs:
-  //   - durante PULL: o contador animado (cresce visualmente)
-  //   - durante LLM/FINALIZING: o total fixo
-  const displayedMsgs = phase === PHASE_PULL ? animatedMsgCount : totalCapturedMsgs;
 
   return (
     <div
