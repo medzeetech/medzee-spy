@@ -275,59 +275,51 @@ async def query_last_n_per_chat(
 ) -> list[CapturedMessage]:
     """Retorna as últimas ``n_per_chat`` mensagens de cada conversa do user.
 
-    Sem janela temporal. Estratégia equivalente ao F5 pipeline
-    (:func:`app.workers.extract.pull_last_n_per_chat`) — útil quando o
-    webhook está funcionando e o cache local já tem mensagens.
+    Sem janela temporal. Usa a RPC ``medzee_spy.top_n_messages_per_chat``
+    (migration ``f5_1_top_n_messages_per_chat_rpc``) que executa o top-N
+    via window function ``ROW_NUMBER() OVER (PARTITION BY wa_chatid
+    ORDER BY ts DESC)`` direto no Postgres.
 
-    Implementação: lê tudo do user (snapshot pode crescer, mas no MVP é
-    pequeno) e faz top-N por wa_chatid em Python. Em produção com alto
-    volume virar window function PostgreSQL.
+    **Fix 2026-05-19**: a versão anterior fazia ``.select('*').order('wa_chatid')``
+    em Python depois de baixar tudo, e o limite default 1000 do PostgREST
+    cobria apenas 7 chats do user (o top chat sozinho tinha 2861 msgs e
+    dominava a primeira página alfabética). Resultado: relatório sempre
+    via "10 msgs em 2 conversas" em vez de 858 msgs em 47 conversas.
 
     Returns:
         Lista plana de :class:`CapturedMessage`, ordenada por
-        (wa_chatid asc, ts asc) — pronta pra agrupar no serviço.
+        (wa_chatid asc, ts asc) — pronta pra agrupar no service.
     """
     n_per_chat = max(1, min(int(n_per_chat), 100))
 
     def _run() -> Any:
-        # Limita por user_id; sem cutoff temporal. Ordena por (wa_chatid, ts desc)
-        # pra pegar fácil os últimos N por chat.
-        #
-        # Limit alto explícito: PostgREST tem default Range 0-999 que truncaria
-        # um user com 50+ chats * 30 msgs = 1500 linhas. 10_000 cobre folgadamente
-        # até ~330 chats × 30 msgs; pra além disso, virar window function SQL.
+        # PostgREST .rpc() chama a function SECURITY INVOKER. Limit explícito
+        # alto pra cobrir até 100 chats × 100 msgs = 10k.
         return (
-            _table()
-            .select("*")
-            .eq("user_id", str(user_id))
-            .order("wa_chatid", desc=False)
-            .order("ts", desc=True)
+            get_supabase_admin_client()
+            .schema("medzee_spy")
+            .rpc("top_n_messages_per_chat", {
+                "p_user_id": str(user_id),
+                "p_n_per_chat": n_per_chat,
+            })
             .limit(10_000)
             .execute()
         )
 
     result = await asyncio.to_thread(_run)
     raw_rows: list[dict] = getattr(result, "data", None) or []
+    parsed = [CapturedMessage.model_validate(row) for row in raw_rows]
 
-    # Top-N por wa_chatid mantendo ordem desc (mais recente primeiro).
-    seen_per_chat: dict[str, int] = {}
-    kept: list[dict] = []
-    for row in raw_rows:
-        chatid = row.get("wa_chatid") or ""
-        current = seen_per_chat.get(chatid, 0)
-        if current < n_per_chat:
-            kept.append(row)
-            seen_per_chat[chatid] = current + 1
+    # Contagem de chats distintos pra log
+    distinct_chats = len({r.get("wa_chatid") for r in raw_rows if r.get("wa_chatid")})
 
-    parsed = [CapturedMessage.model_validate(row) for row in kept]
     logger.info(
         "repo.captured.query_last_n_per_chat",
         extra={
             "user_id": str(user_id),
             "n_per_chat": n_per_chat,
-            "total_rows_scanned": len(raw_rows),
             "kept_after_topN": len(parsed),
-            "conversation_count": len(seen_per_chat),
+            "conversation_count": distinct_chats,
         },
     )
     return parsed
