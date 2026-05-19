@@ -883,8 +883,39 @@ async def pull_last_n_per_chat(
     partial = False
     chats: list[Chat] = []
 
+    async def _warmup_uazapi_cache() -> None:
+        """F8v3 fix: insight do user em prod (2026-05-19): a PRIMEIRA chamada
+        ao /chat/find tipicamente falha (uazapi paid history sync interno
+        em andamento), mas AQUECE o cache. A SEGUNDA chamada já encontra
+        cache populado e funciona.
+
+        Aqui fazemos a chamada de aquecimento EXPLÍCITA (limit=1, leve)
+        + esperamos 15s pro cache do uazapi popular. Resultado: o
+        list_chats real abaixo já bate no cache quente e responde 200.
+
+        Idempotente: se uazapi já está warm, essa chamada é só ~300ms
+        overhead. Se está cold, ganhamos a chance de funcionar na 1ª
+        tentativa do user em vez de exigir que ele clique "Gerar" 2x.
+        """
+        try:
+            await provider.list_chats(session_token, limit=1, offset=0)
+            logger.info(
+                "pull_last_n.warmup_call_ok",
+                extra={"op": "pull_last_n_per_chat"},
+            )
+        except Exception:
+            # Cache estava cold — chamada falhou MAS aqueceu o cache.
+            logger.info(
+                "pull_last_n.warmup_call_failed_but_triggered_sync",
+                extra={"op": "pull_last_n_per_chat"},
+            )
+        await asyncio.sleep(15.0)
+
     async def _do_extract() -> None:
         nonlocal partial, chats
+
+        # 0. Warmup: aquece cache da uazapi antes da chamada real.
+        await _warmup_uazapi_cache()
 
         # 1. Lista todos os chats (1-2 páginas no normal).
         offset = 0
