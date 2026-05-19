@@ -487,18 +487,39 @@ async def _fail(
     started_at: float,
     chat_count: int,
 ) -> None:
-    """Best-effort delete + publish ``failed`` SSE + persist failure."""
-    # uazapi's DELETE /instance disconnects + removes the row in one call,
-    # freeing the device slot. Never let cleanup errors mask the original
-    # failure — log and continue.
-    from app.clients.whatsapp import get_provider
+    """Publish ``failed`` SSE + persist failure. Preserve instance on
+    transient errors.
 
-    try:
-        await get_provider().delete_instance(state.uazapi_token)
-    except Exception:
-        logger.warning(
-            "extract pipeline: provider.delete_instance failed (ignored)",
-            extra={"session_id": str(session_id), "op": "extract"},
+    **Fix 2026-05-19**: o `delete_instance` original era chamado em
+    QUALQUER falha (incluindo UazapiUnavailable de 500 transitório do
+    /chat/find), o que destruía a instância no provider e forçava o user
+    a re-scanear o QR. Observado em prod (logs 00:01:44):
+    `lastDisconnectReason: disconnected by API (instance deletion)`.
+
+    Política nova:
+    - `code='banned'`     → deleta (instância já era do ponto de vista
+                            uazapi/WhatsApp, libera slot)
+    - todos os outros     → preserva (uazapi_unavailable / timeout /
+                            extract_failed / unknown — provavelmente
+                            transitório, instância segue válida)
+    """
+    if code == "banned":
+        from app.clients.whatsapp import get_provider
+        try:
+            await get_provider().delete_instance(state.uazapi_token)
+        except Exception:
+            logger.warning(
+                "extract pipeline: provider.delete_instance failed (ignored)",
+                extra={"session_id": str(session_id), "op": "extract"},
+            )
+    else:
+        logger.info(
+            "extract pipeline: skipping delete_instance (transient failure, preserving instance)",
+            extra={
+                "session_id": str(session_id),
+                "op": "extract",
+                "code": code,
+            },
         )
 
     await session_store.publish(

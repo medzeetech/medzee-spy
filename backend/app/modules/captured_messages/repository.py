@@ -92,20 +92,26 @@ def _serialize(item: CapturedMessageInsert) -> dict[str, Any]:
 
 
 async def insert_many(items: list[CapturedMessageInsert]) -> int:
-    """Bulk insert captured messages, ignoring duplicates by raw_message_id.
+    """Bulk insert captured messages, dedup'ing duplicates by raw_message_id.
 
-    Rows that collide on the
-    ``(whatsapp_session_id, raw_message_id)`` partial unique index are
-    silently skipped (NOT an error). This makes the webhook safe to retry —
-    uazapi has at-least-once delivery semantics, so the same event can land
-    twice.
+    **Fix 2026-05-19**: o ``upsert(on_conflict='whatsapp_session_id,
+    raw_message_id', ignore_duplicates=True)`` original quebrava com
+    PostgREST APIError ``42P10`` ("no unique or exclusion constraint
+    matching the ON CONFLICT specification"), porque o índice
+    ``ux_captured_messages_dedup`` é **partial** (``WHERE raw_message_id IS
+    NOT NULL``) e PostgREST não consegue referenciá-lo via
+    ``on_conflict=<cols>`` — só por nome de constraint normal. Resultado:
+    TODO insert via webhook quebrava → ``captured_messages`` ficava vazia.
 
-    Returns the number of rows **actually inserted** (excluding silently
-    ignored duplicates). PostgREST's response with
-    ``Prefer: resolution=ignore-duplicates`` only includes truly-inserted
-    rows, so ``len(result.data)`` is the right count.
+    Nova estratégia:
+        1. **Dedup batch em Python** por ``(whatsapp_session_id,
+           raw_message_id)`` — evita duplicatas dentro do mesmo webhook.
+        2. **Plain INSERT** (sem on_conflict).
+        3. Em ``unique_violation`` (code 23505) — retry one-by-one
+           pulando os que conflitam (cobre at-least-once cross-batch
+           do webhook uazapi).
 
-    Empty input is a no-op and returns 0 without hitting Supabase.
+    Empty input é no-op e retorna 0 sem hit no Supabase.
     """
     requested = len(items)
     if requested == 0:
@@ -115,24 +121,64 @@ async def insert_many(items: list[CapturedMessageInsert]) -> int:
         )
         return 0
 
-    rows = [_serialize(item) for item in items]
-    result = await asyncio.to_thread(
-        lambda: _table()
-        .upsert(
-            rows,
-            on_conflict=_ON_CONFLICT,
-            ignore_duplicates=True,
+    # 1. Dedup em memória — uazapi webhook pode mandar a mesma msg 2x
+    # no mesmo batch (raro mas observado em paid).
+    seen: set[tuple[str, str]] = set()
+    unique_items: list[CapturedMessageInsert] = []
+    for it in items:
+        key = (str(it.whatsapp_session_id), it.raw_message_id or "")
+        if it.raw_message_id and key in seen:
+            continue
+        seen.add(key)
+        unique_items.append(it)
+
+    rows = [_serialize(item) for item in unique_items]
+
+    # 2. Plain INSERT (sem on_conflict — o partial index ainda protege
+    #    em profundidade, dispara 23505 que tratamos abaixo).
+    try:
+        result = await asyncio.to_thread(
+            lambda: _table().insert(rows).execute()
         )
-        .execute()
-    )
-    returned = getattr(result, "data", None) or []
-    rows_inserted = len(returned)
+        rows_inserted = len(getattr(result, "data", None) or [])
+    except Exception as exc:
+        # 3. Fallback row-by-row se algum raw_message_id colidiu com
+        #    insert anterior (webhook at-least-once cross-batch).
+        msg = str(exc)
+        if "23505" not in msg and "duplicate" not in msg.lower():
+            logger.exception(
+                "repo.captured.insert_many.fatal",
+                extra={"count": requested, "error": msg[:200]},
+            )
+            raise
+        logger.info(
+            "repo.captured.insert_many.batch_conflict_fallback_one_by_one",
+            extra={"count": len(rows)},
+        )
+        rows_inserted = 0
+        for r in rows:
+            try:
+                res = await asyncio.to_thread(
+                    lambda r=r: _table().insert(r).execute()
+                )
+                rows_inserted += len(getattr(res, "data", None) or [])
+            except Exception as inner:
+                inner_msg = str(inner)
+                if "23505" in inner_msg or "duplicate" in inner_msg.lower():
+                    continue  # ok, duplicate cross-batch
+                logger.warning(
+                    "repo.captured.insert_many.row_failed",
+                    extra={"error": inner_msg[:200]},
+                )
+
     logger.info(
         "repo.captured.insert_many",
         extra={
             "count": requested,
+            "unique_in_batch": len(unique_items),
             "rows_inserted": rows_inserted,
-            "rows_skipped": requested - rows_inserted,
+            "rows_skipped_batch_dedup": requested - len(unique_items),
+            "rows_skipped_cross_batch": len(unique_items) - rows_inserted,
         },
     )
     return rows_inserted

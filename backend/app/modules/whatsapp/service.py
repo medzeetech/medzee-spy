@@ -592,17 +592,23 @@ class WhatsAppService:
             await self._store.publish(
                 session_id, SSEEvent(name="connected", data={"phone": phone})
             )
-            # F1 reativado (2026-05-17, pós-teste curl em uazapi paid):
-            # /chat/find + /message/find confirmados 200 OK no tier pago, então
-            # o pull-history de 30d volta a ser disparado em paralelo ao
-            # forward-capture de F4. As duas estratégias coexistem: F1 popula
-            # o ExtractedPayload em memória pra gerar relatório auto pós-signup;
-            # F4 (webhook 'messages') segue capturando mensagens novas pra
-            # relatórios on-demand depois.
-            asyncio.create_task(
-                self._run_extract(session_id),
-                name=f"extract-{session_id}",
-            )
+            # F5 (2026-05-19): DESLIGADO o auto-dispatch do extract_30d_pipeline.
+            # Motivo: o pipeline antigo chamava `_fail` → `delete_instance`
+            # quando o uazapi devolvia 500 em /chat/find (cenário frequente
+            # nos primeiros 60s pós-connect, history sync ainda rolando).
+            # Resultado observado em prod (logs 2026-05-19 00:01:44):
+            # toda instância morria 1-2min após conexão, com
+            # `lastDisconnectReason: disconnected by API (instance deletion)`.
+            #
+            # Decisão F5: relatório só roda quando o user clica "Gerar agora"
+            # no front (POST /api/reports/generate → pull_last_n_per_chat).
+            # A instância fica viva indefinidamente até o user desconectar
+            # manualmente ou o webhook `disconnected` chegar.
+            #
+            # Quem precisa do extract automático pós-signup pode reativar
+            # criando uma task com nome `extract-<session_id>` aqui — mas
+            # o `_fail` em extract.py também precisa parar de chamar
+            # delete_instance (vide Fix 3 do mesmo PR).
             logger.info(
                 "service.webhook.connected",
                 extra={
