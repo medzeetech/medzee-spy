@@ -28,6 +28,13 @@ const PHASE_FINALIZING = 'finalizing';
 // é normalizada por esse 50% pra atingir 100% no fim da fase PULL.
 const PULL_END_PCT = 50;
 
+// Quando captured_messages.message_count está em 0 (sessão nova, webhook
+// ainda não chegou OU pipeline F5 vai puxar direto da uazapi via fallback),
+// estimamos o total como chatCount * AVG_MSGS_PER_CHAT. AVG é o n_per_chat
+// padrão do GenerateReportModal (30 = "Recomendado"). É uma estimativa
+// honesta — mostramos com prefixo "~" pra deixar claro.
+const AVG_MSGS_PER_CHAT_ESTIMATE = 30;
+
 function pickPhase(elapsedMs, hasData) {
   if (elapsedMs < 30_000) return hasData ? PHASE_PULL : PHASE_PULL;
   if (elapsedMs < 90_000) return PHASE_LLM;
@@ -61,14 +68,24 @@ function StatPill({ Icon, value, label, highlight }) {
 
 export default function ReportGeneratingState({ elapsedMs = 0 }) {
   // 2 fontes:
-  //   - useUazapiStats: chat_count ao vivo via uazapi /chat/find
-  //   - useWhatsappStatus: message_count do captured_messages (total real)
+  //   - useUazapiStats: chat_count ao vivo via uazapi /chat/find (sempre
+  //     funciona se há sessão conectada — sem depender de webhook)
+  //   - useWhatsappStatus: message_count do captured_messages local
+  //     (zero quando session é nova / webhook não chegou ainda)
   const uazapiStats = useUazapiStats({ enabled: true, intervalMs: 3000 });
   const { status: waStatus } = useWhatsappStatus();
   const chatCount = uazapiStats?.stats?.chat_count ?? 0;
   const totalCapturedMsgs = waStatus?.message_count ?? 0;
 
-  const hasData = chatCount > 0 || totalCapturedMsgs > 0;
+  // Total estimado pra mostrar progresso quando não temos o real ainda.
+  // Marcamos visualmente como estimativa (prefixo ~). Quando o real chega,
+  // usa o real.
+  const usingEstimate = totalCapturedMsgs === 0 && chatCount > 0;
+  const totalMsgs = usingEstimate
+    ? chatCount * AVG_MSGS_PER_CHAT_ESTIMATE
+    : totalCapturedMsgs;
+
+  const hasData = chatCount > 0 || totalMsgs > 0;
   const phase = pickPhase(elapsedMs, hasData);
 
   // Progresso aproximado: 0-30s = 0-50% (pull), 30-90s = 50-90% (LLM),
@@ -84,25 +101,28 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
   pct = Math.round(pct);
 
   // Contagem de msgs DERIVADA da porcentagem da barra. Normalizada por
-  // PULL_END_PCT (50%) pra atingir totalCapturedMsgs no exato instante
-  // em que a fase PULL termina e a barra cruza 50%. Após isso (LLM/
-  // FINALIZING) congela no total real enquanto a barra continua subindo.
-  // Resultado: contagem e barra crescem em sincronia visual — sem dois
-  // ritmos competindo.
+  // PULL_END_PCT (50%) pra atingir totalMsgs no exato instante em que a
+  // fase PULL termina e a barra cruza 50%. Após isso (LLM/FINALIZING)
+  // congela no total enquanto a barra continua subindo (LLM rodando).
+  // totalMsgs pode ser real (captured_messages) OU estimativa
+  // (chatCount * 30 quando webhook ainda não populou) — diferença só
+  // visual via prefixo "~".
   let displayedMsgs;
   if (phase === PHASE_PULL) {
     const pullRatio = Math.min(1, pct / PULL_END_PCT);
-    displayedMsgs = Math.floor(totalCapturedMsgs * pullRatio);
+    displayedMsgs = Math.floor(totalMsgs * pullRatio);
   } else {
-    displayedMsgs = totalCapturedMsgs;
+    displayedMsgs = totalMsgs;
   }
+  const formatMsgs = (n) =>
+    (usingEstimate ? '~' : '') + n.toLocaleString('pt-BR');
 
   let headline;
   let subline;
   if (phase === PHASE_PULL) {
     headline = hasData ? 'Lendo suas conversas…' : 'Conectando ao WhatsApp…';
-    if (totalCapturedMsgs > 0) {
-      subline = `Lendo ${displayedMsgs.toLocaleString('pt-BR')} de ${totalCapturedMsgs.toLocaleString('pt-BR')} mensagens em ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'}.`;
+    if (totalMsgs > 0) {
+      subline = `Lendo ${formatMsgs(displayedMsgs)} de ${formatMsgs(totalMsgs)} mensagens em ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'}.`;
     } else if (chatCount > 0) {
       subline = `Já vimos ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} no seu WhatsApp.`;
     } else {
@@ -110,7 +130,13 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
     }
   } else if (phase === PHASE_LLM) {
     headline = 'IA analisando o conteúdo…';
-    subline = `Cruzando ${totalCapturedMsgs.toLocaleString('pt-BR')} mensagens de ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} pra gerar insights.`;
+    if (totalMsgs > 0) {
+      subline = `Cruzando ${formatMsgs(totalMsgs)} mensagens de ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} pra gerar insights.`;
+    } else if (chatCount > 0) {
+      subline = `Analisando o histórico de ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'}.`;
+    } else {
+      subline = 'Processando o histórico das suas conversas.';
+    }
   } else {
     headline = 'Finalizando seu diagnóstico…';
     subline = 'Montando funil, oportunidades perdidas e benchmarks.';
@@ -189,7 +215,7 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
         </p>
 
         {/* Stats reais — só renderiza quando tem dados pra mostrar */}
-        {(chatCount > 0 || totalCapturedMsgs > 0) && (
+        {(chatCount > 0 || totalMsgs > 0) && (
           <div
             style={{
               display: 'flex',
@@ -207,7 +233,7 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
             />
             <StatPill
               Icon={Wifi}
-              value={displayedMsgs.toLocaleString('pt-BR')}
+              value={formatMsgs(displayedMsgs)}
               label="mensagens"
               highlight={phase === PHASE_PULL}
             />
