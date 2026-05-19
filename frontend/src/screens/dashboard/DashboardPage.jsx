@@ -96,7 +96,10 @@ function MetricCard({ label, value, unit, trend, positive, Icon, color }) {
 
 function LiveStatsRow({ chatCount, uazapiMessageCount, capturedCount }) {
   // Card horizontal com as 3 contagens "ao vivo" — vem direto do uazapi
-  // /chat/find (não depende do nosso webhook). Mostra mesmo sem relatórios.
+  // /chat/find (não depende do nosso webhook). Renderiza SEMPRE que o user
+  // tem WhatsApp conectado, independente de ter relatórios. Resposta:
+  // o dashboard agora reflete dados reais (54 conversas, etc) mesmo quando
+  // o último relatório foi insufficient/zerado.
   const cards = [
     {
       label: 'Conversas no WhatsApp',
@@ -105,7 +108,7 @@ function LiveStatsRow({ chatCount, uazapiMessageCount, capturedCount }) {
       color: COLORS.wa,
     },
     {
-      label: 'Mensagens não lidas',
+      label: 'Mensagens (total uazapi)',
       value: uazapiMessageCount.toLocaleString('pt-BR'),
       Icon: Hash,
       color: COLORS.lavender,
@@ -445,17 +448,22 @@ export default function DashboardPage() {
     </div>
   );
 
+  // LiveStatsRow renderiza SEMPRE que o user tem WhatsApp conectado —
+  // independente de ter relatórios completed. Garante que o dashboard
+  // sempre reflete o estado real do WhatsApp (54 conversas, etc).
+  const liveStatsRow = isConnected ? (
+    <LiveStatsRow
+      chatCount={chatCount}
+      uazapiMessageCount={uazapiMessageCount}
+      capturedCount={capturedCount}
+    />
+  ) : null;
+
   if (completedReports.length === 0) {
     return (
       <div style={{ maxWidth: 900 }}>
         {header}
-        {isConnected && (
-          <LiveStatsRow
-            chatCount={chatCount}
-            uazapiMessageCount={uazapiMessageCount}
-            capturedCount={capturedCount}
-          />
-        )}
+        {liveStatsRow}
         <EmptyState
           isConnected={isConnected}
           chatCount={chatCount}
@@ -535,9 +543,38 @@ export default function DashboardPage() {
     },
   ];
 
+  // Banner discreto quando o último relatório é insufficient — guia o user
+  // a gerar um novo em vez de mostrar cards zerados sem contexto.
+  const isInsufficient = latestPayload?.data_quality === 'insufficient';
+
   return (
     <div style={{ maxWidth: 900 }}>
       {header}
+      {liveStatsRow}
+
+      {isInsufficient && (
+        <div
+          style={{
+            background: 'rgba(232,179,60,0.12)',
+            border: '1px solid rgba(232,179,60,0.45)',
+            borderRadius: 12,
+            padding: '12px 16px',
+            marginBottom: 14,
+            fontSize: 13,
+            color: COLORS.ink,
+            lineHeight: 1.5,
+          }}
+        >
+          O último relatório foi gerado sem mensagens suficientes — os cards
+          abaixo estão zerados.{' '}
+          <Link
+            to="/app/reports"
+            style={{ color: COLORS.orange, fontWeight: 600, textDecoration: 'none' }}
+          >
+            Gerar novo relatório →
+          </Link>
+        </div>
+      )}
 
       <div className="flex flex-wrap" style={{ gap: 14, marginBottom: 28 }}>
         {metrics.map((m) => <MetricCard key={m.label} {...m} />)}
