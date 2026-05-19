@@ -1,7 +1,7 @@
 # Roadmap
 
 **Current Milestone:** M1 — Fluxo ponta a ponta funcional
-**Status:** In Progress (F1 ✅ deprecated · F2 ✅ done · F3 ✅ code done · F4 ✅ code done · F5 🟡 code done, smoke pendente · F6/F7 not started)
+**Status:** ✅ COMPLETE smoke E2E em prod (2026-05-19). F1 deprecated · F2/F3/F4/F5 ✅ done · F6/F7 not started.
 
 ---
 
@@ -40,17 +40,15 @@ sem mudança.
 
 **Commits-chave:** `b1f3f67` (spec+design+tasks), `8b8cd44` (Wave 1: migration + schemas + exceptions), `5fe3c8c` (Wave 2: repo + security + scaffold + frontend lib), `2c0f177` (Wave 3: AuthService completo), `cd2a55f` (Wave 4: routes + router wiring), `99d29c1` (Waves 5+6: LoginScreen + LeadForm wire + 35 tests).
 
-**F3 — Report Processing** — PLANNED
+**F3 — Report Processing** — ✅ COMPLETE (smoke E2E confirmado 2026-05-19 via F4+F5)
 - Pipeline: mensagens brutas → normalização → agregação de métricas → prompt LLM → relatório estruturado
-- Prompt principal focado em clínicas (saúde) + prompt fallback genérico
-- Detecção de domínio (saúde vs. outro) por heurística sobre conteúdo das mensagens
-- Persistência do relatório (`reports.payload jsonb`) vinculado ao `user_id`
+- Prompt principal focado em clínicas (saúde) + addendums (odonto / outro)
+- Detecção de domínio agora via `scope_warning` no LLM (F5) — relatório sempre gera, com banner amarelo quando segmento ≠ saúde/odonto
+- Persistência do relatório (`reports.payload jsonb`) vinculado ao `user_id` + RLS owner-only
 - Endpoint `GET /api/reports/:id` autenticado retorna o payload
+- **Smoke validado 2026-05-19**: user gerou relatório real com 241 msgs / 32 conversas / score 45/100, diagnóstico longo e útil identificando segmento real (número pessoal misturando trabalho), sem alucinação
 
-**Smoke E2E**: nunca rodou end-to-end com dados reais porque dependia do
-F1 extract. F4 destrava — quando F4 smoke passar, F3 fecha junto.
-
-**F4 — Forward-Capture & On-Demand Reports** — 🟡 CODE COMPLETE (2026-05-17, smoke pendente)
+**F4 — Forward-Capture & On-Demand Reports** — ✅ COMPLETE (smoke 2026-05-19)
 - Migration `f4_1_captured_messages` (RLS owner-only, TTL 30d após disconnect via job background)
 - Webhook handler estende uazapi `event=messages` (3 shapes) + persiste em batch via upsert dedup
 - `GET /api/whatsapp/status`: counts em tempo real (msgs/conversas/last_message_at)
@@ -60,9 +58,14 @@ F1 extract. F4 destrava — quando F4 smoke passar, F3 fecha junto.
 - Frontend: `WhatsAppPage` com 4 estados visuais (loading/disconnected/connected_no_messages/connected_with_data + warning 24h), `GenerateReportModal` com radio 7/15/30/60, `ReportsListPage` mostra `period_days` por item, `useWhatsappStatus` polling 5s
 - Original F4 "Frontend Integration" do plano antigo foi absorvido por F2+F3 (~80%, falta só route guard) — renomeada pra esta feature de pivot.
 
-**Commits-chave:** `abb01aa` (specs), `689e797` (Wave 1: migration + schemas + SessionStore.user_id), `0c0c68d` (Wave 2: repo + webhook handler + status endpoint + TTL + scaffold), `5a370f3` (Wave 3: worker adapter), `1dbdf34` (Wave 4: POST /generate), `7612d0e` (Wave 5: frontend).
+**Bugs resolvidos no smoke (2026-05-18..19):**
+- `42P10` no insert_many: PostgREST `upsert(on_conflict='cols')` não casa com partial unique index `WHERE raw_message_id IS NOT NULL` → trocado por plain INSERT + dedup batch em Python + fallback row-by-row em 23505 (commit `3ca748e`).
+- Instâncias morrendo 1-2min pós-connect: `extract_30d_pipeline` legado (F1 deprecated) ainda disparava no handler `connected` e chamava `delete_instance` em qualquer 500 do `/chat/find` → callsite removido + `_fail` só deleta em `code='banned'` (commit `3ca748e`).
+- Webhook URL com `addUrlEvents`/`addUrlTypesMessages: true` gerava 404 — corrigido pra `false` (commits anteriores).
 
-**F5 — Last-N per Chat & Always-Generates Report** — 🟡 CODE COMPLETE (2026-05-18, smoke pendente)
+**Commits-chave:** `abb01aa` (specs), `689e797`...`7612d0e` (Waves 1-5), `3ca748e` (fixes smoke).
+
+**F5 — Last-N per Chat & Always-Generates Report** — ✅ COMPLETE (smoke 2026-05-19)
 - **Por quê**: F4 quase passou, mas três portões mataram a UX: threshold `min 10 msgs` na route, short-circuit `< 5 msgs` no worker, prompt instruindo "recuse se não é saúde". Resultado: user conecta WhatsApp → tela "gerando" → 0 relatório → abandona. F5 destrava removendo TODOS esses portões.
 - **Pull strategy nova** (`pull_last_n_per_chat`): em vez de filtrar por janela temporal (que uazapi paid recusa), pega as últimas N msgs de CADA conversa. Default 30. Funciona em qualquer tier.
 - **Relatório sempre gera**: route não bloqueia mais por volume; worker só pula LLM quando exatamente 0 mensagens; prompt reescrito pra produzir diagnóstico mesmo com sample mínima.
@@ -70,7 +73,16 @@ F1 extract. F4 destrava — quando F4 smoke passar, F3 fecha junto.
 - **Observabilidade**: `ReportGeneratingState` (tela "gerando") agora pola `/api/whatsapp/uazapi-stats` a cada 3s e mostra "X conversas detectadas · Y mensagens lidas" em tempo real. Sem timer falso.
 - **Modal redesenhado**: `GenerateReportModal` troca 7/15/30/60 dias por 10/20/30/50 msgs por conversa.
 
-**Arquivos-chave:** specs em `.specs/features/f5-last-n-per-chat/`. Backend: `app/workers/extract.py` (+pull_last_n_per_chat), `app/modules/captured_messages/repository.py` (+query_last_n_per_chat), `app/modules/captured_messages/schemas.py` (ReportMode/ReportNPerChat), `app/modules/reports/{service,routes,schemas,prompts/*}.py`, `app/workers/report.py`. Frontend: `lib/reports.js`, `lib/whatsapp.js` (intervalMs override), `screens/dashboard/{GenerateReportModal,ReportGeneratingState,ReportDetailPage}.jsx`.
+**Arquivos-chave:** specs em `.specs/features/f5-last-n-per-chat/`. Backend: `app/workers/extract.py` (+pull_last_n_per_chat), `app/modules/captured_messages/repository.py` (+query_last_n_per_chat via RPC), `app/modules/captured_messages/schemas.py` (ReportMode/ReportNPerChat), `app/modules/reports/{service,routes,schemas,prompts/*}.py`, `app/workers/report.py`. Frontend: `lib/reports.js`, `lib/whatsapp.js` (intervalMs override), `screens/dashboard/{GenerateReportModal,ReportGeneratingState,ReportDetailPage,DashboardPage,WhatsAppPage}.jsx`, `components/report/ReportTopbar.jsx`.
+
+**Bugs resolvidos no smoke (2026-05-19):**
+- Relatório gerava sempre "10 msgs em 2 conversas" mesmo com 8.6k msgs no DB: `query_last_n_per_chat` fazia `.order(wa_chatid).limit(implicit 1000)` em Python — top chat com 2861 msgs dominava primeira página alfabética → só 7 chats vistos → 2 sobreviviam ao filtro de grupos. **Fix arquitetural**: migration `f5_1_top_n_messages_per_chat_rpc` (window function `ROW_NUMBER() OVER (PARTITION BY wa_chatid ORDER BY ts DESC)`) — query agora devolve 858 msgs em 47 chats (commit `ad64b99`).
+- Dashboard mostrava "1.000 mensagens" com 8.6k reais: PostgREST default Range 0-999 trunca todo `.select()` sem `count="exact"`. **Fix**: stats_for_session/stats_for_user usam `count="exact"` header (commit `fe1ea8c`).
+- ReportTopbar com mock "Clínica São Bento • Cardiologia • 4 atendentes • 28 dias" → dados reais via useMe + payload (commit `191f0e8`).
+- Contagem "0 mensagens" travada na tela de geração → animação 0→total via `useAnimatedCount` ease-out 3s (commit `85f88df`).
+- `reports_period_days_check` violation com `n_per_chat=50` → service só atualiza `period_days` quando `mode='window_days'` (commit `fe1ea8c`).
+
+**Commits-chave:** `abb01aa` (F4 specs), `e0c06f9` (F5 spec+code), `3ca748e` (fixes smoke F4), `351ec41` (dashboard LiveStats), `fe1ea8c` (stats count exact + period_days fix), `ad64b99` (RPC window function), `191f0e8` (ReportTopbar real), `85f88df` (contagem animada).
 
 **F6 — DX & Docs** — PLANNED
 - README com setup local (backend + frontend + sidecar) e `.env` documentado

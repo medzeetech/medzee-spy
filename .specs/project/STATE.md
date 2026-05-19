@@ -129,6 +129,26 @@
   Lição: invest em abstração no design phase paga muito quando o produto
   pivota.
 
+- **L11 (2026-05-19) — PostgREST `upsert(on_conflict='cols')` exige índice unique NORMAL — partial index NÃO casa.**
+  `medzee_spy.captured_messages` tinha `CREATE UNIQUE INDEX ... WHERE raw_message_id IS NOT NULL` (partial). PostgREST traduz `.upsert(on_conflict='whatsapp_session_id,raw_message_id')` em `ON CONFLICT (cols)` que exige índice unique **não-partial**. Erro: `42P10 there is no unique or exclusion constraint matching the ON CONFLICT specification`. Resultado: webhook `messages` perdia TODAS as inserções → `captured_messages` ficava eternamente vazia.
+  Fix: trocar pra plain `INSERT` + dedup batch em memória + fallback row-by-row tratando `23505`. Índice partial fica como defesa em profundidade.
+  Pra próximas tabelas: ou usa índice unique full (force raw_message_id NOT NULL) ou aceita lidar com 23505 no caller.
+
+- **L12 (2026-05-19) — PostgREST default Range 0-999 trunca TODA query `.select()` sem `count="exact"` ou `.limit()` explícito.**
+  `stats_for_session` baixava todas as rows e contava `len(rows)`. Com 8.6k msgs reais → contou 1000 (truncado). Dashboard exibia "1.000 mensagens" em vez do total real.
+  Fix: usar `.select(..., count="exact")` (PostgREST manda header `Prefer: count=exact` e devolve total no `result.count`) + `.limit(1000)` explícito pra amostra usada em derivações (distinct chats, last_message_at).
+  Pra qualquer COUNT em scale: nunca confie no `len(rows)`.
+
+- **L13 (2026-05-19) — Top-N por grupo em Python falha quando 1 chave domina; precisa window function PostgreSQL.**
+  `query_last_n_per_chat` fazia `.order(wa_chatid asc).order(ts desc)` e top-N em loop. Combinado com truncate 1000 (L12), o top chat com 2861 msgs sozinho dominava a primeira página alfabética → só 7 chats aparece de 47 totais → relatório sempre dava "10 msgs em 2 conversas".
+  Fix arquitetural: migration `f5_1_top_n_messages_per_chat_rpc` cria função SQL com `ROW_NUMBER() OVER (PARTITION BY wa_chatid ORDER BY ts DESC) WHERE rn <= n_per_chat`. Repository chama via `.rpc('top_n_messages_per_chat', {...})`.
+  Regra: top-N por grupo em volume não-trivial = window function direto no DB, nunca em Python.
+
+- **L14 (2026-05-19) — Auto-disparar pipeline pesado no webhook `connected` + brutalismo em `_fail` (delete_instance) = instância morre 1-2min após cada conexão.**
+  `service._handle_connection_event` disparava `extract_30d_pipeline` no `connected`. O extract chamava `/chat/find` → uazapi devolve 500 nos primeiros 60s (history sync inicial) → `_fail` chamava `delete_instance` pra "liberar slot" → uazapi destruía a instância → user tinha que re-scanear QR.
+  Fix: não disparar pipeline automático no connect (F5 deixa explícito: relatório só roda quando user clica "Gerar agora"). Defesa em profundidade: `_fail` só deleta em `code='banned'`.
+  Lição: cleanup automático no caminho de erro só faz sentido quando o erro é DEFINITIVO. Pra erros transitórios (uazapi 500 temporário), preservar a instância sempre.
+
 ## Todos (cross-sessão)
 
 - [x] ~~Confirmar modelo LLM default~~ → D2 ratificada (Anthropic Claude).
@@ -144,10 +164,13 @@
 - [ ] **Migration F3**: `medzee_spy.reports (id, user_id, session_id, status, payload jsonb, prompt_version, model, ...)`.
 - [ ] Mover `AGENT_ID` da Marina (ElevenLabs) de hardcode para `import.meta.env.VITE_ELEVENLABS_AGENT_ID` em `AgentScreen.jsx` (CONCERNS R8).
 - [ ] (Opcional, pós-MVP) State persistence — hoje `SessionStore` é in-memory; redeploy do Railway perde sessões abertas. Considerar Redis ou rehidratação via DB no startup quando volume justificar.
-- [x] ~~F4 forward-capture implementado~~ — migration f4_1, captured_messages module, webhook event=messages, GET /whatsapp/status, POST /reports/generate, TTL job, frontend WhatsAppPage + GenerateReportModal. Suite 172/172. Smoke E2E pendente em uazapi paid (Wave 7 testes + smoke fecham F4).
-- [ ] **B2 follow-up** — habilitar leaked password protection no Supabase (1 clique no Dashboard) antes do F4 ir pra prod.
-- [x] ~~F5 last-N per chat + relatório sempre gera~~ — 2026-05-18. Spec/design/tasks em `.specs/features/f5-last-n-per-chat/`. Backend: `pull_last_n_per_chat`, `query_last_n_per_chat`, mode `last_n_per_chat`, threshold rígido removido, prompt reescrito, `scope_warning` no schema. Frontend: GenerateReportModal com 10/20/30/50 msgs, ReportGeneratingState com contagens reais via /uazapi-stats, ScopeWarningBanner no ReportDetailPage.
-- [ ] **F5 smoke E2E** — validar em uazapi paid: scan QR → gerar relatório → relatório aparece com >= 1 mensagem real OU com diagnostic_summary insufficient explícito. Sem mais "tela travada gerando".
+- [x] ~~F4 forward-capture implementado~~ — migration f4_1, captured_messages module, webhook event=messages, GET /whatsapp/status, POST /reports/generate, TTL job, frontend WhatsAppPage + GenerateReportModal.
+- [x] ~~F4 smoke E2E em produção~~ — confirmado 2026-05-19 após fixes de 5 bugs (L11-L14). User gerou relatório real com 241 msgs / 32 conversas / score 45 / diagnóstico longo identificando segmento real.
+- [ ] **B2 follow-up** — habilitar leaked password protection no Supabase (1 clique no Dashboard) antes de prod pública.
+- [x] ~~F5 last-N per chat + relatório sempre gera~~ — 2026-05-18. Spec em `.specs/features/f5-last-n-per-chat/`. Backend + frontend completos.
+- [x] ~~F5 smoke E2E~~ — confirmado 2026-05-19 (mesmo run do F4 smoke).
+- [ ] **F6 — DX & Docs** — README com setup local + script único pra subir backend+frontend+worker. Não bloqueia M1, mas vale antes de onboarding de outros devs.
+- [ ] **F7 — Route guards (opcional)** — guard de rota autenticada em `/app/*`. Pequeno (~30min). Não bloqueia M1.
 
 ## Ideias adiadas
 

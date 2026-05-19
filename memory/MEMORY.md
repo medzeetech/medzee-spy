@@ -1,0 +1,6 @@
+- [Projeto Medzee Spy](project_medzee_spy.md) — Diagnóstico comercial via WhatsApp; M1 funcional ponta-a-ponta (smoke 2026-05-19); FastAPI+Supabase + React 19+Vite+Tailwind
+- [Stack do projeto](project_stack.md) — Stack, layout de pastas, endpoints vivos, hooks-chave, gotchas Supabase/uazapi
+- [Sempre gerar relatório](feedback_always_generate_report.md) — User quer relatório que sempre gera (banner amarelo se fora-de-escopo), nunca tela travada nem 422
+- [uazapi: last-N por conversa](feedback_uazapi_last_n_per_chat.md) — Não use cutoff_ts no uazapi paid; pull_last_n_per_chat é o pipeline canônico
+- [PostgREST gotchas](feedback_postgrest_gotchas.md) — partial unique não casa com on_conflict; .select() trunca em 1000 sem count="exact"; top-N por grupo em Python falha quando 1 grupo domina
+- [Não auto-cleanup em erro transitório](feedback_no_auto_cleanup_on_transient_errors.md) — Workers só devem deletar recursos em erros DEFINITIVOS (banned), nunca em transitórios (timeout/unavailable)
