@@ -1,23 +1,33 @@
+import { useEffect, useRef, useState } from 'react';
 import { Sparkles, MessageCircle, Brain, Wifi } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
-import { useUazapiStats } from '../../lib/whatsapp.js';
+import { useUazapiStats, useWhatsappStatus } from '../../lib/whatsapp.js';
 
-// F5: 3 fases reais com observabilidade.
+// F5: 3 fases reais + contagem animada de msgs.
 //
-// Fase 1: COLETANDO        — uazapiStats.chat_count subindo
-//                            (provider listou as conversas)
-// Fase 2: SINCRONIZANDO    — chat_count > 0, message_count crescendo
-//                            (uazapi popula cache via history-sync)
+// Fase 1: COLETANDO        — uazapiStats.chat_count (real, ao vivo)
+//                            + msgs animadas de 0 → totalCaptured em ~3s
+// Fase 2: SINCRONIZANDO    — chat_count > 0, animação já terminou,
+//                            mostra total real (vem do captured_messages
+//                            via /api/whatsapp/status)
 // Fase 3: IA ANALISANDO    — backend já recebeu payload, LLM rodando
 //                            (heurística temporal — uazapiStats não revela isso)
 //
-// O elapsedMs vem do polling de /api/reports/{id}; se >= ~30s, presume
-// que o LLM está rodando (a coleta uazapi tem timeout absoluto de ~30s
-// no caminho feliz). Sem isso é só "coletando…".
+// O elapsedMs vem do polling de /api/reports/{id}; >=30s presume LLM.
+//
+// A contagem de mensagens animada é DELIBERADA (não é mock): o total real
+// vem do snapshot captured_messages, mas a UX simula a leitura
+// progressivamente em ~3s pra dar feedback visual de "lendo agora".
+// Quando atinge o total, congela no número certo.
 
 const PHASE_PULL = 'pull';
 const PHASE_LLM = 'llm';
 const PHASE_FINALIZING = 'finalizing';
+
+// Duração da animação de contagem (de 0 → total).
+const COUNT_ANIMATION_MS = 3000;
+// Frequência de tick: 60ms ≈ 50 frames em 3s — smooth sem custar nada.
+const COUNT_TICK_MS = 60;
 
 function pickPhase(elapsedMs, hasData) {
   if (elapsedMs < 30_000) return hasData ? PHASE_PULL : PHASE_PULL;
@@ -50,14 +60,66 @@ function StatPill({ Icon, value, label, highlight }) {
   );
 }
 
-export default function ReportGeneratingState({ elapsedMs = 0 }) {
-  // Pola /api/whatsapp/uazapi-stats a cada 3s enquanto o relatório gera.
-  // Mostra contagens reais — chats listados + msgs sincronizadas.
-  const uazapiStats = useUazapiStats({ enabled: true, intervalMs: 3000 });
-  const chatCount = uazapiStats?.stats?.chat_count ?? 0;
-  const messageCount = uazapiStats?.stats?.message_count ?? 0;
-  const hasData = chatCount > 0 || messageCount > 0;
+// Hook que anima um contador de 0 → target em duração fixa. Quando target
+// mudar (ex.: polling refresh do status sobe), continua de onde está e
+// re-ajusta o passo. Idempotente: chamadas com mesmo target não reiniciam.
+//
+// Nota implementação: o reset pra 0 quando target=0 não vai num setValue
+// no body do effect (lint react/set-state-in-effect). Em vez disso, o
+// próprio interval cuida do display: enquanto target=0, o effect nem
+// arranca, e o último valor anterior fica congelado. Quando target sobe,
+// arranca a animação a partir do valor atual.
+function useAnimatedCount(target) {
+  const [value, setValue] = useState(0);
+  const startRef = useRef(null);
+  const startValueRef = useRef(0);
 
+  useEffect(() => {
+    if (target <= 0) {
+      // Sem animação: o display fica no último valor. Não setState aqui.
+      return undefined;
+    }
+    // Snapshot do estado atual no momento que arranca a animação.
+    startRef.current = Date.now();
+    let startValue = startValueRef.current;
+    setValue((prev) => {
+      startValue = prev;
+      startValueRef.current = prev;
+      return prev;
+    });
+
+    const handle = setInterval(() => {
+      const elapsed = Date.now() - startRef.current;
+      const ratio = Math.min(1, elapsed / COUNT_ANIMATION_MS);
+      // Ease-out: rápido no começo, suaviza no fim.
+      const eased = 1 - Math.pow(1 - ratio, 2);
+      const next = Math.floor(startValue + (target - startValue) * eased);
+      setValue(next >= target ? target : next);
+      if (ratio >= 1) {
+        clearInterval(handle);
+      }
+    }, COUNT_TICK_MS);
+
+    return () => clearInterval(handle);
+  }, [target]);
+
+  return value;
+}
+
+export default function ReportGeneratingState({ elapsedMs = 0 }) {
+  // 2 fontes:
+  //   - useUazapiStats: chat_count ao vivo via uazapi /chat/find
+  //   - useWhatsappStatus: message_count do captured_messages (total
+  //     real persistido localmente — é esse que animamos)
+  const uazapiStats = useUazapiStats({ enabled: true, intervalMs: 3000 });
+  const { status: waStatus } = useWhatsappStatus();
+  const chatCount = uazapiStats?.stats?.chat_count ?? 0;
+  const totalCapturedMsgs = waStatus?.message_count ?? 0;
+
+  // Anima 0 → total em ~3s. Quando totalCapturedMsgs é 0, fica em 0.
+  const animatedMsgCount = useAnimatedCount(totalCapturedMsgs);
+
+  const hasData = chatCount > 0 || totalCapturedMsgs > 0;
   const phase = pickPhase(elapsedMs, hasData);
 
   // Progresso aproximado: 0-30s = 0-50% (pull), 30-90s = 50-90% (LLM),
@@ -75,19 +137,27 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
   let headline;
   let subline;
   if (phase === PHASE_PULL) {
-    headline = hasData
-      ? 'Lendo suas conversas…'
-      : 'Conectando ao WhatsApp…';
-    subline = hasData
-      ? `Já vimos ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} no seu WhatsApp.`
-      : 'Buscando a lista de conversas no seu WhatsApp.';
+    headline = hasData ? 'Lendo suas conversas…' : 'Conectando ao WhatsApp…';
+    if (totalCapturedMsgs > 0) {
+      subline = `Lendo ${animatedMsgCount.toLocaleString('pt-BR')} de ${totalCapturedMsgs.toLocaleString('pt-BR')} mensagens em ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'}.`;
+    } else if (chatCount > 0) {
+      subline = `Já vimos ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} no seu WhatsApp.`;
+    } else {
+      subline = 'Buscando a lista de conversas no seu WhatsApp.';
+    }
   } else if (phase === PHASE_LLM) {
+    const msgs = totalCapturedMsgs || animatedMsgCount;
     headline = 'IA analisando o conteúdo…';
-    subline = `Cruzando ${messageCount.toLocaleString('pt-BR')} mensagens de ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} pra gerar insights.`;
+    subline = `Cruzando ${msgs.toLocaleString('pt-BR')} mensagens de ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} pra gerar insights.`;
   } else {
     headline = 'Finalizando seu diagnóstico…';
     subline = 'Montando funil, oportunidades perdidas e benchmarks.';
   }
+
+  // O valor exibido na pill de msgs:
+  //   - durante PULL: o contador animado (cresce visualmente)
+  //   - durante LLM/FINALIZING: o total fixo
+  const displayedMsgs = phase === PHASE_PULL ? animatedMsgCount : totalCapturedMsgs;
 
   return (
     <div
@@ -162,7 +232,7 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
         </p>
 
         {/* Stats reais — só renderiza quando tem dados pra mostrar */}
-        {(chatCount > 0 || messageCount > 0) && (
+        {(chatCount > 0 || totalCapturedMsgs > 0) && (
           <div
             style={{
               display: 'flex',
@@ -180,7 +250,7 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
             />
             <StatPill
               Icon={Wifi}
-              value={messageCount.toLocaleString('pt-BR')}
+              value={displayedMsgs.toLocaleString('pt-BR')}
               label="mensagens"
               highlight={phase === PHASE_PULL}
             />
