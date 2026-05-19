@@ -46,7 +46,10 @@ function maskCurrency(value) {
   return num.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-export default function LeadFormScreen({ onSubmit, showTicketMedio = false, whatsappSessionId = null }) {
+// `showTicketMedio` default = true: ticket é dado essencial pro relatório
+// (alimenta a coluna users_profile.ticket_medio que o LLM usa pra estimar
+// R$ perdidos). Quem quiser ocultar (ex.: re-cadastro), passa false explícito.
+export default function LeadFormScreen({ onSubmit, showTicketMedio = true, whatsappSessionId = null }) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [name, setName] = useState('');
