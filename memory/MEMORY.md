@@ -5,3 +5,4 @@
 - [PostgREST gotchas](feedback_postgrest_gotchas.md) — partial unique não casa com on_conflict; .select() trunca em 1000 sem count="exact"; top-N por grupo em Python falha quando 1 grupo domina
 - [Não auto-cleanup em erro transitório](feedback_no_auto_cleanup_on_transient_errors.md) — Workers só devem deletar recursos em erros DEFINITIVOS (banned), nunca em transitórios (timeout/unavailable)
 - [Signup auto-gera relatório](feedback_signup_auto_generate.md) — Trigger do output principal deve ser parte atômica do onboarding, nunca exigir clique manual depois
+- [Pre-gera output durante input do user](feedback_pre_generate_on_connect.md) — Não espere user terminar form pra disparar pipeline; rode em paralelo com FK nullable e linka no final

@@ -592,23 +592,20 @@ class WhatsAppService:
             await self._store.publish(
                 session_id, SSEEvent(name="connected", data={"phone": phone})
             )
-            # F5 (2026-05-19): DESLIGADO o auto-dispatch do extract_30d_pipeline.
-            # Motivo: o pipeline antigo chamava `_fail` → `delete_instance`
-            # quando o uazapi devolvia 500 em /chat/find (cenário frequente
-            # nos primeiros 60s pós-connect, history sync ainda rolando).
-            # Resultado observado em prod (logs 2026-05-19 00:01:44):
-            # toda instância morria 1-2min após conexão, com
-            # `lastDisconnectReason: disconnected by API (instance deletion)`.
+            # F8 (2026-05-19): dispara PRE-GENERATE em background.
+            # Aproveita o tempo (30-90s) que user gasta preenchendo LeadForm
+            # pra rodar coleta+LLM em paralelo. Quando user completa signup,
+            # `consume_extracted` linka o user_id na row pre-gerada e o
+            # relatório aparece IMEDIATO em /reports/latest.
             #
-            # Decisão F5: relatório só roda quando o user clica "Gerar agora"
-            # no front (POST /api/reports/generate → pull_last_n_per_chat).
-            # A instância fica viva indefinidamente até o user desconectar
-            # manualmente ou o webhook `disconnected` chegar.
-            #
-            # Quem precisa do extract automático pós-signup pode reativar
-            # criando uma task com nome `extract-<session_id>` aqui — mas
-            # o `_fail` em extract.py também precisa parar de chamar
-            # delete_instance (vide Fix 3 do mesmo PR).
+            # Diferença vs extract_30d_pipeline antigo (F1 deprecated):
+            # - F1 antigo: matava instância no _fail (Bug 2 de 3ca748e).
+            # - F8: usa o pipeline F5 (pull_last_n_per_chat) que NUNCA
+            #   chama delete_instance.
+            asyncio.create_task(
+                _kick_off_pre_generate(session_id),
+                name=f"pre-generate-{session_id}",
+            )
             logger.info(
                 "service.webhook.connected",
                 extra={
@@ -1006,24 +1003,30 @@ class WhatsAppService:
             )
             return None
 
-        # 1b. F7 fix (2026-05-19): REMOVIDO o placeholder de report que era
-        # criado aqui (legado F1). Causava dois reports simultâneos quando
-        # o frontend (F7) também disparava generateReport pós-signup —
-        # confirmado em prod pelo user. Agora a CRIAÇÃO de report é
-        # responsabilidade exclusiva do `POST /api/reports/generate` (que
-        # o frontend dispara via F7 ou via botão "Gerar relatório").
-        # consume_extracted só linka user_id e (best-effort) puxa payload
-        # do store em memória se houver.
+        # 1b. F8 (2026-05-19): linka user_id na row reports pre-gerada
+        # (criada quando o webhook 'connected' chegou — vide
+        # `_kick_off_pre_generate`). Resultado: row sai de
+        # user_id=NULL → user_id=<novo signup>, e o frontend pós-signup
+        # encontra o relatório PRONTO em /reports/latest.
         #
-        # Caso edge: se uma row de report já existe pra essa session
-        # (worker antigo F1, hot-reload, etc.), ainda linka o user_id pra
-        # não quebrar RLS. Mas NÃO cria nada novo.
+        # Também atualiza clinic_segment com o valor real do users_profile
+        # (pre-generate usou default 'outro').
         try:
             from app.modules.reports import repository as reports_repo
 
             existing = await reports_repo.get_existing_for_session(session_id)
             if existing is not None:
                 await reports_repo.link_user(session_id, user_id)
+                logger.info(
+                    "service.consume_extracted.linked_pre_report",
+                    extra={
+                        "op": "consume_extracted",
+                        "session_id": str(session_id),
+                        "user_id": str(user_id),
+                        "report_id": str(existing.get("id")),
+                        "report_status": existing.get("status"),
+                    },
+                )
         except Exception:
             logger.warning(
                 "service.consume_extracted.report_link_failed",
@@ -1355,6 +1358,73 @@ def _payload_says_connected(payload: Any) -> bool:
         if data.get("loggedIn") is True or data.get("logged_in") is True:
             return True
     return False
+
+
+# ─── F8: pre-generate report on QR connected ──────────────────────────
+
+
+async def _kick_off_pre_generate(session_id: UUID) -> None:
+    """F8: dispara pipeline de relatório em background quando WhatsApp
+    conecta — antes do user fazer signup.
+
+    Cria row reports anônima (user_id=NULL) vinculada à session. Roda
+    o worker normal (pull_last_n_per_chat + LLM + persist). Quando user
+    completa signup, `consume_extracted` linka o user_id na row
+    existente. Resultado: relatório pronto IMEDIATO pós-signup.
+
+    Idempotente: se já existe row pra essa session (webhook duplicado,
+    re-scan QR), pula a criação. Best-effort: nenhuma falha aqui pode
+    bloquear o handler do webhook.
+    """
+    try:
+        from app.modules.reports import repository as reports_repo
+        from app.modules.reports.service import _build_and_run_with_timeout
+
+        # Idempotência: se já criou (webhook duplicado), skip.
+        existing = await reports_repo.get_existing_for_session(session_id)
+        if existing is not None:
+            logger.info(
+                "service.pre_generate.already_exists",
+                extra={
+                    "op": "pre_generate",
+                    "session_id": str(session_id),
+                    "report_id": str(existing.get("id")),
+                },
+            )
+            return
+
+        # Cria row anônima — user_id=NULL será linkado em consume_extracted.
+        report_id = await reports_repo.create_generating(
+            whatsapp_session_id=session_id,
+            user_id=None,
+            clinic_segment="outro",  # default; será atualizado no link
+        )
+
+        logger.info(
+            "service.pre_generate.dispatched",
+            extra={
+                "op": "pre_generate",
+                "session_id": str(session_id),
+                "report_id": str(report_id),
+            },
+        )
+
+        # Roda o pipeline em background (não awaita — handler já retornou).
+        asyncio.create_task(
+            _build_and_run_with_timeout(
+                report_id=report_id,
+                user_id=None,
+                mode="last_n_per_chat",
+                n_per_chat=30,
+                whatsapp_session_id=session_id,
+            ),
+            name=f"pre-generate-worker-{session_id}",
+        )
+    except Exception:
+        logger.exception(
+            "service.pre_generate.failed",
+            extra={"op": "pre_generate", "session_id": str(session_id)},
+        )
 
 
 __all__ = [

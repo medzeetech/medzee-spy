@@ -4,6 +4,12 @@
 
 ## Decisões
 
+- **D12 (2026-05-19 — F8 pivot) — Pre-gerar relatório no webhook 'connected', não pós-signup.**
+  Por quê: F7v2 forçava user esperar 30-60s pós-signup vendo "Sincronizando…" + "Gerando…". Insight melhor: aproveitar os 30-90s que o user já gasta preenchendo LeadForm — rodar coleta+LLM em background a partir do connect. Resultado: relatório aparece IMEDIATO pós-signup (~1s).
+  Como aplicar: webhook 'connected' dispara `asyncio.create_task(_kick_off_pre_generate(session_id))`. Row reports criada com user_id=NULL. `consume_extracted` no signup linka user_id depois (a coluna reports.user_id já é nullable, sem migration).
+  Trade-off: queima 1 Claude call por user que abandona signup (centavos). Converter user pagando vale muito mais que esse custo.
+  Supersedeia D11 (que centralizava no frontend pós-signup). D11 fica como decisão histórica útil pra entender a evolução.
+
 - **D11 (2026-05-19 — F7) — Composição "signup + auto-generate" vive no frontend, não no backend.**
   Por quê: o relatório precisa aparecer IMEDIATAMENTE após signup (coração do produto). Como F1 extract_30d_pipeline foi deprecated (D8 + Bug 2 de 3ca748e: matava instâncias), alguém precisa orquestrar o `POST /api/reports/generate` pós-signup. Alternativas avaliadas: (1) backend signup chamar reports.service — acopla auth a reports, anti-padrão; (2) background task FastAPI — invisível pro frontend, sem report_id pra navegar imediato; (3) frontend orquestra após signup — escolhido.
   Como aplicar: `LeadFormScreen.handleSubmit` dispara `generateReport({n_per_chat: 30})` logo após `setSession`, navega pra `/app/reports/{report_id}`. Fallback graceful se falhar (`/app/reports/latest`). `auth.service` continua single-purpose.
@@ -180,8 +186,9 @@
 - [x] ~~F5 last-N per chat + relatório sempre gera~~ — 2026-05-18. Spec em `.specs/features/f5-last-n-per-chat/`. Backend + frontend completos.
 - [x] ~~F5 smoke E2E~~ — confirmado 2026-05-19 (mesmo run do F4 smoke).
 - [x] ~~**F6 — DX & Docs**~~ — 2026-05-19. README raiz, .env.example refinados, `package.json` raiz com `npm run dev` (concurrently), .gitignore atualizado.
-- [x] ~~**F7 — Auto-Generate Report on Signup**~~ — 2026-05-19. Branch `feat/f7-auto-generate-on-signup`. LeadFormScreen orquestra signup → generate → navigate. Coração do produto restaurado.
-- [ ] **F8 — Route guards (opcional)** — guard de rota autenticada em `/app/*`. Pequeno (~30min). Não bloqueia M1.
+- [x] ~~**F7 — Auto-Generate Report on Signup**~~ — superseded por F8 (2026-05-19). Mantida a lógica de fallback no frontend.
+- [x] ~~**F8 — Pre-Generate Report on QR Connected**~~ — 2026-05-19. Branch `feat/f7-auto-generate-on-signup`. Pipeline roda em background durante preenchimento do form.
+- [ ] **F9 — Route guards (opcional)** — guard de rota autenticada em `/app/*`. Pequeno (~30min). Não bloqueia M1.
 
 ## Ideias adiadas
 

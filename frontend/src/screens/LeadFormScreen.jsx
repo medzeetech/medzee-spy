@@ -3,41 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import { User, Mail, Phone, ArrowRight, ArrowLeft, Volume2, Lock, DollarSign, Eye, EyeOff } from 'lucide-react';
 import { COLORS } from '../constants/colors.js';
 import Logo from '../components/Logo.jsx';
-import { api, callApi } from '../lib/api.js';
-import { generateReport } from '../lib/reports.js';
+import { api } from '../lib/api.js';
 import { supabase } from '../lib/supabase.js';
 import resultadoAudio from '../assets/resultado.mp3';
 
-// F7v2: warmup do uazapi antes de disparar generate.
-// Bug observado em prod (2026-05-19 02:17): F7 disparava generate
-// imediatamente após signup, mas captured_messages estava vazio
-// (webhook 'messages' acabou de ligar e nenhuma msg nova chegou) E
-// uazapi /chat/find devolvia 500 por 60+ segundos (history sync
-// interno). Resultado: retry budget 105s tentando algo que não ia
-// funcionar até uazapi popular o cache. User via "Finalizando…" a 89%
-// por minutos com captured_messages vazia.
-//
-// Solução: pola GET /api/whatsapp/uazapi-stats até chat_count > 0
-// (sinal de que uazapi já tem cache pronto). Aí dispara generate.
-// Timeout: 30s — se uazapi não responder, dispara mesmo assim
-// (backend tem retry budget próprio).
-const WARMUP_MAX_MS = 30_000;
-const WARMUP_INTERVAL_MS = 3_000;
-
-async function waitForUazapiReady() {
-  const deadline = Date.now() + WARMUP_MAX_MS;
-  while (Date.now() < deadline) {
-    try {
-      const stats = await callApi('/api/whatsapp/uazapi-stats', { auth: true });
-      if (stats?.chat_count > 0) return { ready: true, chatCount: stats.chat_count };
-    } catch {
-      // 404 (sem sessão), 409 (não-conectado), 502 (uazapi down) — todos
-      // são transitórios no fluxo pós-signup. Continua polling.
-    }
-    await new Promise((resolve) => setTimeout(resolve, WARMUP_INTERVAL_MS));
-  }
-  return { ready: false, chatCount: 0 };
-}
+// F8: o relatório é pré-gerado em BACKGROUND assim que o webhook
+// 'connected' chega no backend (vide whatsapp/service::_kick_off_pre_generate).
+// Quando o user completa o signup aqui, `consume_extracted` linka o
+// user_id na row já pre-gerada. Frontend só precisa navegar pra
+// `/app/reports/latest` — o relatório provavelmente já está pronto.
 
 function maskPhone(value) {
   const digits = value.replace(/\D/g, '').slice(0, 11);
@@ -94,10 +68,6 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = true, whats
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [touched, setTouched] = useState({});
   const [submitting, setSubmitting] = useState(false);
-  // F7v2: 2 sub-fases do submit pra UX honesta. 'creating' = signup
-  // em andamento; 'syncing' = aguardando uazapi popular cache antes
-  // de disparar generate. Ambas mantêm o botão disabled.
-  const [submitPhase, setSubmitPhase] = useState('creating');
   const [fieldErrors, setFieldErrors] = useState({});
   const [error, setError] = useState(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
@@ -146,7 +116,6 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = true, whats
     setTouched({ password: true, confirmPassword: true });
     if (!step2Valid || submitting) return;
     setSubmitting(true);
-    setSubmitPhase('creating');
     setFieldErrors({});
     setError(null);
 
@@ -170,50 +139,14 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = true, whats
       }
       onSubmit?.(payload);
 
-      // F7: orquestração frontend signup → generate → navega.
-      // O coração do produto Medzee Spy é o relatório aparecendo
-      // IMEDIATAMENTE após cadastro — sem fricção de "clique pra gerar".
-      // F1 extract_30d_pipeline foi deprecated (matava instâncias),
-      // então o frontend dispara o generate explicitamente aqui.
-      //
-      // Fallbacks:
-      //   - sem whatsappSessionId  → vai pra dashboard (caminho raro)
-      //   - generate falha         → /app/reports/latest com fallback
-      //                              graceful (user pode clicar "Gerar"
-      //                              manualmente no botão da lista)
-      if (whatsappSessionId) {
-        // F7v2: warmup do uazapi antes do generate. Sem isso, o backend
-        // cai no fallback /chat/find que devolve 500 nos primeiros
-        // ~60s pós-connect (uazapi ainda fazendo history sync interno).
-        setSubmitPhase('syncing');
-        const warmup = await waitForUazapiReady();
-        console.info('[F7] warmup result', warmup);
-
-        try {
-          console.info('[F7] auto-generate dispatch', {
-            whatsappSessionId,
-            n_per_chat: 30,
-            warmupReady: warmup.ready,
-            warmupChatCount: warmup.chatCount,
-          });
-          const generated = await generateReport({ n_per_chat: 30 });
-          const reportId = generated?.report_id;
-          if (reportId) {
-            navigate(`/app/reports/${reportId}`);
-            return;
-          }
-          navigate('/app/reports/latest');
-          return;
-        } catch (genErr) {
-          console.warn('[F7] auto-generate failed, fallback latest', genErr);
-          navigate('/app/reports/latest');
-          return;
-        }
-      }
-
-      // Sem session whatsapp linkada — caminho raro (re-login? signup
-      // sem passar pelo /spy?). Dashboard mostra o CTA "Conectar WhatsApp".
-      navigate('/app/dashboard');
+      // F8: o relatório foi PRE-GERADO em background pelo backend
+      // assim que o webhook 'connected' chegou (vide
+      // whatsapp/service::_kick_off_pre_generate). O signup acabou de
+      // chamar consume_extracted que linkou o user_id na row pre-gerada.
+      // Frontend só navega — o relatório já está pronto OU em fase final.
+      console.info('[F8] signup OK, navigating to latest', { whatsappSessionId });
+      navigate(whatsappSessionId ? '/app/reports/latest' : '/app/dashboard');
+      return;
     } catch (err) {
       if (err?.status === 409) {
         navigate(`/login?email=${encodeURIComponent(normalizedEmail)}`);
@@ -715,11 +648,7 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = true, whats
                     e.currentTarget.style.boxShadow = '0 10px 30px -8px rgba(255,107,53,0.5)';
                   }}
                 >
-                  {submitting
-                    ? (submitPhase === 'syncing'
-                        ? 'Sincronizando histórico…'
-                        : 'Criando conta…')
-                    : 'Criar conta e ver relatório'}
+                  {submitting ? 'Criando conta…' : 'Criar conta e ver relatório'}
                   {!submitting && <ArrowRight size={16} />}
                 </button>
               </div>
