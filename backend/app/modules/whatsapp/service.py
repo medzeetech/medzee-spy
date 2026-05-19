@@ -1363,14 +1363,27 @@ def _payload_says_connected(payload: Any) -> bool:
 # ─── F8: pre-generate report on QR connected ──────────────────────────
 
 
+# F8 warmup: tempo que esperamos APÓS webhook 'connected' antes de tentar
+# /chat/find na uazapi. Observação empírica em prod (2026-05-19 02:39):
+# uazapi paid devolve 500 em /chat/find(limit=100) durante 60-120s
+# pós-connect (history sync interno). Retry budget atual (5/10/30/60 =
+# 105s entre tentativas) começa cedo demais e queima o budget tentando
+# antes da uazapi estar pronta. O user está preenchendo o form nesse
+# tempo mesmo — não há custo de UX em esperar.
+#
+# Configurável via env pra ajuste fino sem deploy.
+_PRE_GENERATE_WARMUP_S: float = float(os.environ.get("PRE_GENERATE_WARMUP_S", "90"))
+
+
 async def _kick_off_pre_generate(session_id: UUID) -> None:
     """F8: dispara pipeline de relatório em background quando WhatsApp
     conecta — antes do user fazer signup.
 
-    Cria row reports anônima (user_id=NULL) vinculada à session. Roda
-    o worker normal (pull_last_n_per_chat + LLM + persist). Quando user
-    completa signup, `consume_extracted` linka o user_id na row
-    existente. Resultado: relatório pronto IMEDIATO pós-signup.
+    Cria row reports anônima (user_id=NULL) vinculada à session. Espera
+    PRE_GENERATE_WARMUP_S (60s default) pra uazapi popular cache interno,
+    AÍ roda o worker normal (pull_last_n_per_chat + LLM + persist).
+    Quando user completa signup, `consume_extracted` linka o user_id na
+    row existente. Resultado: relatório pronto IMEDIATO pós-signup.
 
     Idempotente: se já existe row pra essa session (webhook duplicado,
     re-scan QR), pula a criação. Best-effort: nenhuma falha aqui pode
@@ -1406,18 +1419,13 @@ async def _kick_off_pre_generate(session_id: UUID) -> None:
                 "op": "pre_generate",
                 "session_id": str(session_id),
                 "report_id": str(report_id),
+                "warmup_s": _PRE_GENERATE_WARMUP_S,
             },
         )
 
-        # Roda o pipeline em background (não awaita — handler já retornou).
+        # Dispara worker DEPOIS do warmup. Não awaita — fire-and-forget.
         asyncio.create_task(
-            _build_and_run_with_timeout(
-                report_id=report_id,
-                user_id=None,
-                mode="last_n_per_chat",
-                n_per_chat=30,
-                whatsapp_session_id=session_id,
-            ),
+            _delayed_pre_generate_worker(report_id, session_id),
             name=f"pre-generate-worker-{session_id}",
         )
     except Exception:
@@ -1425,6 +1433,30 @@ async def _kick_off_pre_generate(session_id: UUID) -> None:
             "service.pre_generate.failed",
             extra={"op": "pre_generate", "session_id": str(session_id)},
         )
+
+
+async def _delayed_pre_generate_worker(report_id: UUID, session_id: UUID) -> None:
+    """Espera warmup, depois chama o worker. Em fire-and-forget."""
+    from app.modules.reports.service import _build_and_run_with_timeout
+
+    if _PRE_GENERATE_WARMUP_S > 0:
+        await asyncio.sleep(_PRE_GENERATE_WARMUP_S)
+
+    logger.info(
+        "service.pre_generate.warmup_done_dispatching_worker",
+        extra={
+            "op": "pre_generate",
+            "session_id": str(session_id),
+            "report_id": str(report_id),
+        },
+    )
+    await _build_and_run_with_timeout(
+        report_id=report_id,
+        user_id=None,
+        mode="last_n_per_chat",
+        n_per_chat=30,
+        whatsapp_session_id=session_id,
+    )
 
 
 __all__ = [

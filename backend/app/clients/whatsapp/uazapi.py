@@ -32,21 +32,22 @@ logger = logging.getLogger(__name__)
 
 _PROVIDER_CODE_BANNED = 463
 
-# B3 fix (F3 §REPORT-15): uazapi free returns 500 on /chat/find right
-# after connect because the history sync is still in flight. The original
-# (2,5,12)s budget = ~19s was way too tight — empiric measurement on free
-# tier shows the sync can take 60-120s. Bumped to (10,30,60,120)s so the
-# retry budget ≈ 220s. 4xx propagates immediately (not transient). Only
-# applied to the heavy data-pulling ops (list_chats / list_messages) —
-# create/connect/delete stay on a single attempt.
-# Retry budget AJUSTADO pós-experiência F4-on-demand: o budget anterior
-# (15/30/60/120/180/180 = 585s) trava o usuário no spinner. Pro F1 auto-extract
-# o tempo é ok (background, não bloqueia UX), mas o /generate on-demand é
-# síncrono na percepção do usuário. Compromisso: (5/10/30/60) = 105s — cobre
-# blips transitórios + 1 ciclo de uazapi history sync, mas falha rápido
-# quando uazapi tá realmente off. pull_history aplica timeout absoluto de
-# 3min em cima disso pra garantir UX.
-_RETRY_DELAYS_S: tuple[float, ...] = (5.0, 10.0, 30.0, 60.0)
+# B3 fix → F4-on-demand → F8 update:
+# uazapi paid devolve 500 em /chat/find logo após connect (history sync
+# interno em andamento). Observação empírica em prod (2026-05-19 02:39):
+# o budget anterior (5/10/30/60 = 105s entre delays) era insuficiente —
+# uazapi paid podia continuar 500 por mais de 120s pós-connect.
+#
+# F8 strategy: o pre_generate já espera PRE_GENERATE_WARMUP_S (default 90s)
+# ANTES do primeiro list_chats. Aí o retry adicional (5/10/30/60/120 =
+# 225s entre delays) cobre eventual lag residual. Total efetivo no
+# caminho ruim: 90s warmup + 225s retry = ~315s = ~5min. User está
+# preenchendo form em paralelo, então nem percebe.
+#
+# Pro on-demand (botão "Gerar"), o cache uazapi já está quente (sessão
+# conectada faz tempo) → list_chats responde 200 OK na 1ª tentativa,
+# não bate o retry.
+_RETRY_DELAYS_S: tuple[float, ...] = (5.0, 10.0, 30.0, 60.0, 120.0)
 
 
 async def _retry_5xx(
