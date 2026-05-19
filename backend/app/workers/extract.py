@@ -883,50 +883,86 @@ async def pull_last_n_per_chat(
     partial = False
     chats: list[Chat] = []
 
-    async def _warmup_uazapi_cache() -> None:
-        """F8v3 fix: insight do user em prod (2026-05-19): a PRIMEIRA chamada
-        ao /chat/find tipicamente falha (uazapi paid history sync interno
-        em andamento), mas AQUECE o cache. A SEGUNDA chamada já encontra
-        cache populado e funciona.
+    async def _warmup_uazapi_cache(delay_s: float) -> None:
+        """F8v3: aquece cache do uazapi via list_chats(limit=1) + sleep.
 
-        Aqui fazemos a chamada de aquecimento EXPLÍCITA (limit=1, leve)
-        + esperamos 15s pro cache do uazapi popular. Resultado: o
-        list_chats real abaixo já bate no cache quente e responde 200.
-
-        Idempotente: se uazapi já está warm, essa chamada é só ~300ms
-        overhead. Se está cold, ganhamos a chance de funcionar na 1ª
-        tentativa do user em vez de exigir que ele clique "Gerar" 2x.
+        Observação empírica do user (2026-05-19): uazapi paid devolve 500
+        nas 1-2 primeiras chamadas pós-connect (history sync interno em
+        andamento). Cada chamada AQUECE o cache. Esse warmup ataca o
+        problema antes do _do_extract bater no list_chats real.
         """
         try:
             await provider.list_chats(session_token, limit=1, offset=0)
             logger.info(
                 "pull_last_n.warmup_call_ok",
-                extra={"op": "pull_last_n_per_chat"},
+                extra={"op": "pull_last_n_per_chat", "delay_s": delay_s},
             )
         except Exception:
-            # Cache estava cold — chamada falhou MAS aqueceu o cache.
             logger.info(
                 "pull_last_n.warmup_call_failed_but_triggered_sync",
-                extra={"op": "pull_last_n_per_chat"},
+                extra={"op": "pull_last_n_per_chat", "delay_s": delay_s},
             )
-        await asyncio.sleep(15.0)
+        await asyncio.sleep(delay_s)
+
+    async def _try_list_chats_with_warmup() -> list[Chat]:
+        """3 ciclos de warmup + list_chats. Retorna a primeira lista
+        não-vazia, ou [] se todos falharem.
+
+        Cobre o cenário "3 cliques" que o user reportou em prod
+        (2026-05-19): uazapi paid pode precisar de 2-3 aquecimentos
+        antes do cache estar pronto. Fazemos tudo internamente pra que
+        1 clique do user = relatório real (não 3).
+        """
+        warmup_delays = [15.0, 30.0, 45.0]  # progressivo
+        for attempt_idx, delay in enumerate(warmup_delays, start=1):
+            await _warmup_uazapi_cache(delay)
+            try:
+                offset = 0
+                local: list[Chat] = []
+                while True:
+                    page, has_more = await provider.list_chats(
+                        session_token, limit=_PAGE_SIZE, offset=offset
+                    )
+                    local.extend(page)
+                    if not has_more:
+                        break
+                    offset += _PAGE_SIZE
+                if local:
+                    logger.info(
+                        "pull_last_n.list_chats_ok",
+                        extra={
+                            "op": "pull_last_n_per_chat",
+                            "attempt": attempt_idx,
+                            "chat_count": len(local),
+                        },
+                    )
+                    return local
+                logger.info(
+                    "pull_last_n.list_chats_empty_retry",
+                    extra={
+                        "op": "pull_last_n_per_chat",
+                        "attempt": attempt_idx,
+                    },
+                )
+            except Exception:
+                logger.info(
+                    "pull_last_n.list_chats_failed_retry",
+                    extra={
+                        "op": "pull_last_n_per_chat",
+                        "attempt": attempt_idx,
+                    },
+                    exc_info=True,
+                )
+        return []
 
     async def _do_extract() -> None:
         nonlocal partial, chats
 
-        # 0. Warmup: aquece cache da uazapi antes da chamada real.
-        await _warmup_uazapi_cache()
-
-        # 1. Lista todos os chats (1-2 páginas no normal).
-        offset = 0
-        while True:
-            page, has_more = await provider.list_chats(
-                session_token, limit=_PAGE_SIZE, offset=offset
-            )
-            chats.extend(page)
-            if not has_more:
-                break
-            offset += _PAGE_SIZE
+        # 1. Lista chats com warmup interno (até 3 ciclos progressivos).
+        chats = await _try_list_chats_with_warmup()
+        if not chats:
+            partial = True
+            return
 
         logger.info(
             "pull_last_n.chats_listed",
