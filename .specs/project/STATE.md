@@ -4,13 +4,21 @@
 
 ## Decisões
 
-- **D12 (2026-05-19 — F8 pivot) — Pre-gerar relatório no webhook 'connected', não pós-signup.**
+- **D13 (2026-05-19 — F7/F8 REVOGADOS) — Voltar ao fluxo manual de "Gerar relatório" pós-signup.**
+  Por quê: D11 (F7: orquestrar no frontend pós-signup) e D12 (F8: pre-gerar no webhook connected) geraram race conditions intratáveis com user_id NULL + timing uazapi + caminhos múltiplos competindo no DB. Em prod 2026-05-19: report stuck em `generating` por 200+s **ignorando captured_messages que TINHA 7.272 msgs prontos** porque o caminho user_id=NULL não consulta a tabela local.
+  O fluxo manual ("Gerar relatório" no dashboard) usa `query_last_n_per_chat(user_id)` que SEMPRE funciona em ~17s — user_id setado + captured_messages lido direto.
+  Como aplicar: signup → navega `/app/reports` (lista vazia com CTA destacado "↑ Gerar relatório"). User clica → fluxo manual conhecido e estável.
+  Removido: hook auto-dispatch no `_handle_connection_event`, fn `_kick_off_pre_generate`, worker dispatch em `consume_extracted` (mantém só link_user pra evitar leak RLS).
+  Trade-off aceito: 1 clique extra do user. Vale 100x mais que tela travada e UX imprevisível.
+  D11 e D12 ficam preservadas como histórico técnico — não tentar essas estratégias de novo sem repensar arquitetura completa.
+
+- **D12 (2026-05-19 — REVOGADA pela D13) — Pre-gerar relatório no webhook 'connected', não pós-signup.**
   Por quê: F7v2 forçava user esperar 30-60s pós-signup vendo "Sincronizando…" + "Gerando…". Insight melhor: aproveitar os 30-90s que o user já gasta preenchendo LeadForm — rodar coleta+LLM em background a partir do connect. Resultado: relatório aparece IMEDIATO pós-signup (~1s).
   Como aplicar: webhook 'connected' dispara `asyncio.create_task(_kick_off_pre_generate(session_id))`. Row reports criada com user_id=NULL. `consume_extracted` no signup linka user_id depois (a coluna reports.user_id já é nullable, sem migration).
   Trade-off: queima 1 Claude call por user que abandona signup (centavos). Converter user pagando vale muito mais que esse custo.
   Supersedeia D11 (que centralizava no frontend pós-signup). D11 fica como decisão histórica útil pra entender a evolução.
 
-- **D11 (2026-05-19 — F7) — Composição "signup + auto-generate" vive no frontend, não no backend.**
+- **D11 (2026-05-19 — REVOGADA pela D13) — Composição "signup + auto-generate" vive no frontend, não no backend.**
   Por quê: o relatório precisa aparecer IMEDIATAMENTE após signup (coração do produto). Como F1 extract_30d_pipeline foi deprecated (D8 + Bug 2 de 3ca748e: matava instâncias), alguém precisa orquestrar o `POST /api/reports/generate` pós-signup. Alternativas avaliadas: (1) backend signup chamar reports.service — acopla auth a reports, anti-padrão; (2) background task FastAPI — invisível pro frontend, sem report_id pra navegar imediato; (3) frontend orquestra após signup — escolhido.
   Como aplicar: `LeadFormScreen.handleSubmit` dispara `generateReport({n_per_chat: 30})` logo após `setSession`, navega pra `/app/reports/{report_id}`. Fallback graceful se falhar (`/app/reports/latest`). `auth.service` continua single-purpose.
   Trade-off aceito: 1 round-trip extra no signup (+200-500ms). Vale por manter boundaries de módulo limpos e dar UX imediata.

@@ -592,20 +592,12 @@ class WhatsAppService:
             await self._store.publish(
                 session_id, SSEEvent(name="connected", data={"phone": phone})
             )
-            # F8 (2026-05-19): dispara PRE-GENERATE em background.
-            # Aproveita o tempo (30-90s) que user gasta preenchendo LeadForm
-            # pra rodar coleta+LLM em paralelo. Quando user completa signup,
-            # `consume_extracted` linka o user_id na row pre-gerada e o
-            # relatório aparece IMEDIATO em /reports/latest.
-            #
-            # Diferença vs extract_30d_pipeline antigo (F1 deprecated):
-            # - F1 antigo: matava instância no _fail (Bug 2 de 3ca748e).
-            # - F8: usa o pipeline F5 (pull_last_n_per_chat) que NUNCA
-            #   chama delete_instance.
-            asyncio.create_task(
-                _kick_off_pre_generate(session_id),
-                name=f"pre-generate-{session_id}",
-            )
+            # F8 REVOGADO (2026-05-19): auto-dispatch no webhook 'connected'
+            # complicou demais (race conditions com user_id NULL, ignorava
+            # captured_messages). Decisão pragmática: voltar pro fluxo
+            # manual onde user clica "Gerar relatório" no dashboard pós-
+            # signup. Caminho sempre funciona em ~17s.
+            # Vide ReportsListPage.handleGenerate.
             logger.info(
                 "service.webhook.connected",
                 extra={
@@ -1003,57 +995,27 @@ class WhatsAppService:
             )
             return None
 
-        # 1b. F8v2 (2026-05-19): row de report foi PRÉ-CRIADA pelo
-        # webhook 'connected' (`_kick_off_pre_generate`) mas NÃO teve
-        # worker disparado ainda. Aqui linkamos user_id E disparamos o
-        # worker no CAMINHO RÁPIDO (mesmo do botão manual): com user_id
-        # setado, `query_last_n_per_chat(user_id)` lê captured_messages
-        # local em <2s → LLM ~15s → completed.
-        #
-        # Por que disparar SÓ AGORA (não no webhook): F8v1 tentava sem
-        # user_id (caminho uazapi user_id=NULL) — lento e ignorava
-        # captured_messages que JÁ tinha milhares de msgs do user.
+        # F8 REVOGADO: consume_extracted não dispara mais worker de
+        # relatório. Se existir alguma row de report órfã (de teste antigo
+        # ou re-conexão), apenas linka user_id pra evitar leak de RLS.
+        # Relatório real é gerado quando user clica "Gerar relatório" no
+        # dashboard pós-login.
         try:
             from app.modules.reports import repository as reports_repo
-            from app.modules.reports.service import _build_and_run_with_timeout
 
             existing = await reports_repo.get_existing_for_session(session_id)
             if existing is not None:
-                report_id = UUID(str(existing["id"]))
-                report_status = existing.get("status")
                 await reports_repo.link_user(session_id, user_id)
                 logger.info(
-                    "service.consume_extracted.linked_pre_report",
+                    "service.consume_extracted.linked_orphan_report",
                     extra={
                         "op": "consume_extracted",
                         "session_id": str(session_id),
                         "user_id": str(user_id),
-                        "report_id": str(report_id),
-                        "report_status": report_status,
+                        "report_id": str(existing.get("id")),
+                        "report_status": existing.get("status"),
                     },
                 )
-                # Dispara worker REAL agora que temos user_id. Só faz isso
-                # quando a row ainda está em 'generating' (placeholder do
-                # webhook). Se já está 'completed'/'failed' (re-run), skip.
-                if report_status == "generating":
-                    asyncio.create_task(
-                        _build_and_run_with_timeout(
-                            report_id=report_id,
-                            user_id=user_id,
-                            mode="last_n_per_chat",
-                            n_per_chat=30,
-                            whatsapp_session_id=session_id,
-                        ),
-                        name=f"report-worker-{report_id}",
-                    )
-                    logger.info(
-                        "service.consume_extracted.worker_dispatched",
-                        extra={
-                            "op": "consume_extracted",
-                            "report_id": str(report_id),
-                            "user_id": str(user_id),
-                        },
-                    )
         except Exception:
             logger.warning(
                 "service.consume_extracted.report_link_failed",
@@ -1387,75 +1349,9 @@ def _payload_says_connected(payload: Any) -> bool:
     return False
 
 
-# ─── F8: pre-generate report on QR connected ──────────────────────────
-
-
-async def _kick_off_pre_generate(session_id: UUID) -> None:
-    """F8v2: APENAS cria a row de report (status=generating) — NÃO
-    dispara o worker ainda.
-
-    Por quê: o worker REAL é disparado em ``consume_extracted`` (pós-signup),
-    quando user_id já está linkado. Aí o pipeline usa o caminho rápido
-    ``query_last_n_per_chat(user_id)`` que lê direto de captured_messages
-    em <2s (mesmo caminho do botão "Gerar relatório" manual que SEMPRE
-    funciona em 17s).
-
-    Bug anterior (F8v1): pre_generate disparava worker com user_id=NULL
-    → caminho uazapi (60-120s warmup + 225s retry) → frágil. Pior:
-    captured_messages tinha milhares de msgs do user IGNORADAS porque
-    sem user_id não dá pra filtrar. Observado em prod 2026-05-19 02:46:
-    captured_messages tinha 7.272 msgs, mas worker estava preso há 205s
-    tentando uazapi.
-
-    Solução: separar responsabilidades:
-      - WEBHOOK 'connected' (esta fn): só CRIA a row pra /reports/latest
-        ter o que pollar imediatamente pós-signup
-      - SIGNUP (consume_extracted): linka user_id + dispara worker REAL
-        no caminho rápido
-
-    UX: user pós-signup vê tela "Gerando" → polla → ~17s depois recebe
-    relatório completo. Igual ao botão manual, sem trade-offs de timing.
-
-    Idempotente: webhook duplicado vê row existente, skip.
-    """
-    try:
-        from app.modules.reports import repository as reports_repo
-
-        # Idempotência: se já criou (webhook duplicado, re-scan QR), skip.
-        existing = await reports_repo.get_existing_for_session(session_id)
-        if existing is not None:
-            logger.info(
-                "service.pre_generate.placeholder_exists",
-                extra={
-                    "op": "pre_generate",
-                    "session_id": str(session_id),
-                    "report_id": str(existing.get("id")),
-                },
-            )
-            return
-
-        # Cria row placeholder — user_id=NULL será linkado em consume_extracted.
-        report_id = await reports_repo.create_generating(
-            whatsapp_session_id=session_id,
-            user_id=None,
-            clinic_segment="outro",
-        )
-
-        logger.info(
-            "service.pre_generate.placeholder_created",
-            extra={
-                "op": "pre_generate",
-                "session_id": str(session_id),
-                "report_id": str(report_id),
-                "note": "worker dispatch deferred to consume_extracted (after signup links user_id)",
-            },
-        )
-        # NÃO dispara worker — esse trabalho é feito em consume_extracted.
-    except Exception:
-        logger.exception(
-            "service.pre_generate.failed",
-            extra={"op": "pre_generate", "session_id": str(session_id)},
-        )
+# F8 REVOGADO (2026-05-19): pre-generate no webhook complicou demais.
+# Voltamos pro fluxo simples: user clica "Gerar relatório" no dashboard
+# pós-login. Caminho conhecido e estável (~17s).
 
 
 __all__ = [

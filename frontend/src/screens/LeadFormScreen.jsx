@@ -7,11 +7,10 @@ import { api } from '../lib/api.js';
 import { supabase } from '../lib/supabase.js';
 import resultadoAudio from '../assets/resultado.mp3';
 
-// F8: o relatório é pré-gerado em BACKGROUND assim que o webhook
-// 'connected' chega no backend (vide whatsapp/service::_kick_off_pre_generate).
-// Quando o user completa o signup aqui, `consume_extracted` linka o
-// user_id na row já pre-gerada. Frontend só precisa navegar pra
-// `/app/reports/latest` — o relatório provavelmente já está pronto.
+// F8 REVOGADO: auto-generate pós-signup era frágil (timing uazapi).
+// Decisão pragmática: signup → /app/reports (lista vazia + botão
+// 'Gerar relatório' bem visível). User clica → fluxo manual que
+// SEMPRE funciona em ~17s.
 
 function maskPhone(value) {
   const digits = value.replace(/\D/g, '').slice(0, 11);
@@ -139,13 +138,11 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = true, whats
       }
       onSubmit?.(payload);
 
-      // F8: o relatório foi PRE-GERADO em background pelo backend
-      // assim que o webhook 'connected' chegou (vide
-      // whatsapp/service::_kick_off_pre_generate). O signup acabou de
-      // chamar consume_extracted que linkou o user_id na row pre-gerada.
-      // Frontend só navega — o relatório já está pronto OU em fase final.
-      console.info('[F8] signup OK, navigating to latest', { whatsappSessionId });
-      navigate(whatsappSessionId ? '/app/reports/latest' : '/app/dashboard');
+      // Pós-signup: vai pra lista de relatórios. ReportsListPage tem
+      // CTA grande "Gerar relatório" no header — user clica → fluxo
+      // manual (caminho rápido conhecido, ~17s).
+      console.info('[signup] OK, navigating to reports list', { whatsappSessionId });
+      navigate(whatsappSessionId ? '/app/reports' : '/app/dashboard');
       return;
     } catch (err) {
       if (err?.status === 409) {

@@ -1,7 +1,7 @@
 # Roadmap
 
 **Current Milestone:** M1 — Fluxo ponta a ponta funcional
-**Status:** ✅ COMPLETE smoke E2E em prod (2026-05-19). F1 deprecated · F2/F3/F4/F5/F6/F7/F8 ✅ done · F9 (route guards opcional) pendente.
+**Status:** ✅ COMPLETE smoke E2E em prod (2026-05-19). F1 deprecated · F2/F3/F4/F5/F6 ✅ done · F7/F8 ⚠️ REVOGADOS (D13) · F9 (route guards opcional) pendente.
 
 ---
 
@@ -84,7 +84,7 @@ sem mudança.
 
 **Commits-chave:** `abb01aa` (F4 specs), `e0c06f9` (F5 spec+code), `3ca748e` (fixes smoke F4), `351ec41` (dashboard LiveStats), `fe1ea8c` (stats count exact + period_days fix), `ad64b99` (RPC window function), `191f0e8` (ReportTopbar real), `85f88df` (contagem animada).
 
-**F8 — Pre-Generate Report on QR Connected** — ✅ COMPLETE (2026-05-19)
+**F8 — Pre-Generate Report on QR Connected** — ⚠️ REVOGADO (D13, 2026-05-19) — código removido, mantida descrição como histórico:
 - **Por quê**: F7v2 disparava generate PÓS-signup, user esperava +30s warmup + 15-30s LLM (60s parado). Insight do user: aproveitar os 30-90s que ele gasta preenchendo LeadForm pra rodar pipeline em background. Quando termina signup, relatório já está pronto.
 - **Solução**: webhook 'connected' (handler `_handle_connection_event`) dispara `asyncio.create_task(_kick_off_pre_generate(session_id))`. Cria row reports anônima (user_id=NULL) + roda worker. `consume_extracted` pós-signup linka user_id na row existente + atualiza clinic_segment via users_profile.
 - **Backend**: `_build_and_run` aceita user_id None (skip captured local, vai direto uazapi via session_id). Novo `_try_uazapi_last_n_by_session`.
@@ -96,7 +96,7 @@ sem mudança.
 
 **Commits-chave:** `<TBD>`.
 
-**F7 — Auto-Generate Report on Signup** — ⚠️ SUPERSEDED por F8 (2026-05-19)
+**F7 — Auto-Generate Report on Signup** — ⚠️ REVOGADO (D13, 2026-05-19) — histórico:
 - **Por quê**: o coração do produto era "scan QR → cadastro → relatório PRONTO". Após desligar F1 extract_30d_pipeline (matava instâncias), o signup parava em `/app/reports/latest` que dava 404 — user via tela vazia sem ação clara. Quebrava 100% a promessa de valor da landing.
 - **Solução**: `LeadFormScreen.handleSubmit` agora dispara `POST /api/reports/generate` (mode=last_n_per_chat, n=30) logo após signup OK e navega pra `/app/reports/{report_id}` em vez de `/latest`. ReportGeneratingState polla e mostra fases reais (calibradas em commits anteriores: 15-30s typical, 180s hard timeout).
 - **Composição no frontend** (decisão D11): evita acoplar `auth.service` a `reports.service` no backend. Frontend orquestra signup → generate → navigate; backend mantém boundaries de módulo.

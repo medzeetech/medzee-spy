@@ -353,41 +353,60 @@ export default function ReportsListPage() {
       {!loading && !error && items.length === 0 && (
         <div
           style={{
-            padding: '32px 24px',
-            borderRadius: 14,
-            border: `1px dashed ${COLORS.hairline}`,
-            background: COLORS.paper,
+            padding: '40px 28px',
+            borderRadius: 16,
+            border: `1px dashed ${COLORS.orange}40`,
+            background: `linear-gradient(180deg, ${COLORS.paper} 0%, rgba(255,107,53,0.04) 100%)`,
             color: COLORS.inkSoft,
-            fontSize: 13.5,
-            lineHeight: 1.5,
+            fontSize: 14,
+            lineHeight: 1.6,
             textAlign: 'center',
           }}
         >
-          <FileText size={24} style={{ color: COLORS.inkMute, marginBottom: 10 }} />
+          <div
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: 14,
+              background: 'rgba(255,107,53,0.12)',
+              color: COLORS.orange,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 14,
+            }}
+          >
+            <Zap size={26} />
+          </div>
           {/* Empty state inteligente: muda conforme o estado real da
               conexão WhatsApp. */}
           {waLoading ? (
             <div>Você ainda não tem relatórios.</div>
           ) : isConnected ? (
-            messageCount >= 10 ? (
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.ink, marginBottom: 6 }}>
+                Tudo pronto pro seu primeiro diagnóstico
+              </div>
               <div>
-                Você ainda não tem relatórios. Clique em{' '}
-                <span style={{ color: COLORS.orange, fontWeight: 600 }}>
-                  Gerar relatório
+                {messageCount > 0 ? (
+                  <>
+                    Já temos <strong>{messageCount.toLocaleString('pt-BR')}</strong>{' '}
+                    mensagens do seu WhatsApp prontas pra análise.
+                  </>
+                ) : (
+                  <>
+                    Seu WhatsApp está conectado. A análise vai puxar as
+                    últimas 30 mensagens de cada conversa.
+                  </>
+                )}
+                <br />
+                Clique em{' '}
+                <span style={{ color: COLORS.orange, fontWeight: 700 }}>
+                  ↑ Gerar relatório
                 </span>{' '}
-                acima pra criar o primeiro com base nas{' '}
-                {messageCount.toLocaleString('pt-BR')} mensagens já coletadas.
+                acima pra começar (~17s).
               </div>
-            ) : (
-              <div>
-                WhatsApp conectado! Aguarde algumas conversas chegarem
-                (mínimo: 10 mensagens) e depois clique em{' '}
-                <span style={{ color: COLORS.orange, fontWeight: 600 }}>
-                  Gerar relatório
-                </span>
-                . Coletadas até agora: {messageCount.toLocaleString('pt-BR')}.
-              </div>
-            )
+            </div>
           ) : (
             <div>
               Você ainda não tem relatórios. Conecte seu WhatsApp em{' '}
