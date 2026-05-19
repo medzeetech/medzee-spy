@@ -197,15 +197,23 @@ class AuthService:
                     },
                 )
                 raise EmailAlreadyRegistered(email) from exc
+            # Log enriquecido pra diagnosticar 400s opacos vistos em prod
+            # (2026-05-19): antes só registrava error_code (frequentemente
+            # None), o que deixava o problema invisível nos logs.
+            err_message = getattr(exc, "message", None) or str(exc) or ""
+            err_code = getattr(exc, "code", None)
+            err_status = getattr(exc, "status", None)
             logger.warning(
                 "service.auth.signup.supabase_error",
                 extra={
                     "op": "signup",
                     "email_domain": _email_domain(email),
-                    "error_code": getattr(exc, "code", None),
+                    "error_code": err_code,
+                    "error_status": err_status,
+                    "error_message": err_message[:300],
                 },
             )
-            raise SupabaseAuthError(getattr(exc, "message", None) or str(exc)) from exc
+            raise SupabaseAuthError(err_message or str(exc)) from exc
 
         auth_user = getattr(create_response, "user", None) or create_response
         user_id = UUID(str(auth_user.id))

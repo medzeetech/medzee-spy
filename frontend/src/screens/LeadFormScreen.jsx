@@ -156,6 +156,19 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = true, whats
         }
         return;
       }
+      // 400 do Supabase Auth (senha fraca, email inválido para o provedor,
+      // etc.) — backend propaga a mensagem real no detail. Mostra ela em
+      // vez do genérico pra user entender o que ajustar.
+      if (err?.status === 400 && err?.detail) {
+        const friendlyMap = {
+          'weak_password': 'Senha muito fraca. Use 6+ caracteres com letras e números.',
+          'password_too_short': 'Senha precisa ter pelo menos 6 caracteres.',
+          'invalid_email': 'E-mail inválido.',
+        };
+        const friendly = friendlyMap[err.detail] || err.detail;
+        setError(`Falha ao criar conta: ${friendly}`);
+        return;
+      }
       setError('Falha ao criar conta. Tente novamente.');
     } finally {
       setSubmitting(false);
