@@ -144,6 +144,11 @@
   Fix arquitetural: migration `f5_1_top_n_messages_per_chat_rpc` cria função SQL com `ROW_NUMBER() OVER (PARTITION BY wa_chatid ORDER BY ts DESC) WHERE rn <= n_per_chat`. Repository chama via `.rpc('top_n_messages_per_chat', {...})`.
   Regra: top-N por grupo em volume não-trivial = window function direto no DB, nunca em Python.
 
+- **L15 (2026-05-19) — Estado terminal de "consumed" no signup é anti-padrão pós-pivot F5.**
+  O `consume_extracted` original do F2 marcava a session como `consumed` + chamava `delete_instance` no provider logo após o signup. Fazia sentido no F1+F2 (extract auto rodava antes do signup, relatório já estava pronto, libera o slot). Pós-F5, relatório é on-demand: a session precisa SOBREVIVER ao signup pra (a) webhook continuar capturando msgs em `captured_messages` e (b) user gerar quantos relatórios quiser. Symptom em prod: user fazia signup, dashboard logo mostrava "WhatsApp não conectado" porque o status no DB ficava `consumed` (terminal) e `/api/whatsapp/uazapi-stats` devolvia 409.
+  Fix: `consume_extracted` agora SÓ linka user_id + cria placeholder de report. NÃO chama `mark_consumed`, NÃO chama `release_provider_slot`. Status fica `connected`/`extracted` indefinidamente até user desconectar manualmente.
+  Lição mais ampla: ao pivotar de "pipeline batch único pós-signup" pra "pipeline on-demand recorrente", revisar TODOS os release-of-resources do flow antigo — eles assumem que o trabalho terminou, mas no novo paradigma o trabalho continua.
+
 - **L14 (2026-05-19) — Auto-disparar pipeline pesado no webhook `connected` + brutalismo em `_fail` (delete_instance) = instância morre 1-2min após cada conexão.**
   `service._handle_connection_event` disparava `extract_30d_pipeline` no `connected`. O extract chamava `/chat/find` → uazapi devolve 500 nos primeiros 60s (history sync inicial) → `_fail` chamava `delete_instance` pra "liberar slot" → uazapi destruía a instância → user tinha que re-scanear QR.
   Fix: não disparar pipeline automático no connect (F5 deixa explícito: relatório só roda quando user clica "Gerar agora"). Defesa em profundidade: `_fail` só deleta em `code='banned'`.

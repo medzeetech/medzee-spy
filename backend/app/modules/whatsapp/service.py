@@ -934,14 +934,30 @@ class WhatsAppService:
     async def consume_extracted(
         self, session_id: UUID, user_id: UUID
     ) -> ExtractedPayload | None:
-        """Hand off the cached extract to F2 + finalize the session.
+        """Hand off da sessão anônima pro user recém-criado.
 
-        Sequence (WPP-11):
-            1. Verify the session still exists in memory.
-            2. Link the (anonymous) DB row to the user that just signed up.
-            3. Pull the payload out of the store (also marks it CONSUMED).
-            4. Persist the consumed status.
-            5. Best-effort ``provider.disconnect`` — keeps WhatsApp number free.
+        **F5 pivot (2026-05-19)**: o comportamento antigo (mark_consumed +
+        release_provider_slot) destruía a sessão imediatamente após o
+        signup. Fazia sentido no F1+F2 original (extract auto rodava antes
+        e o relatório já estava pronto), mas no F5 a sessão precisa
+        SOBREVIVER ao signup pra:
+          - webhook continuar capturando mensagens em `captured_messages`
+          - user gerar quantos relatórios on-demand quiser depois
+          - dashboard mostrar status "connected" em vez de cair pra
+            empty state pós-signup
+
+        Sequência nova:
+            1. Verifica sessão em memória.
+            2. Linka user_id na DB row (necessário pra RLS + queries
+               futuras de captured_messages).
+            3. Cria placeholder de reports row (se ainda não existe), pro
+               frontend pollar `/api/reports/latest` enquanto worker corre.
+            4. Devolve payload do store (se houver — F1 deprecated path).
+
+        REMOVIDO em F5: mark_consumed (mudava status pra terminal) e
+        release_provider_slot (chamava delete_instance). Session segue
+        viva como `connected`/`extracted` até user desconectar manualmente
+        ou uazapi/WhatsApp encerrar de fato.
         """
         started = time.monotonic()
         logger.info(
@@ -964,18 +980,6 @@ class WhatsAppService:
                 },
             )
             return None
-
-        # Capture the entry status BEFORE step 2 transitions it to CONSUMED.
-        # Releasing the provider slot is ONLY safe when the extract worker
-        # has cleanly finished (entry_status == EXTRACTED). Any other state
-        # means either: extract still running (EXTRACTING/CONNECTED — killing
-        # the instance would crash the in-flight worker), already cleaned up
-        # by upstream (FAILED/EXPIRED), or rare re-entry (CONSUMED).
-        # Letting the uazapi instance live to its natural 1h TTL when we
-        # arrive mid-extract is far better than yanking it out — gives the
-        # worker a chance to complete even when the signup races ahead.
-        entry_status = state.status
-        should_release_slot = entry_status == SessionStatus.EXTRACTED
 
         # 1. Link user (will be required for RLS on future reads).
         try:
@@ -1022,47 +1026,28 @@ class WhatsAppService:
                 exc_info=True,
             )
 
-        # 2. Consume the in-memory payload (also marks state.consumed).
+        # 2. Pega payload do store SEM marcar consumed.
+        # `_store.consume()` marca o state em memória como CONSUMED — mas
+        # a session no DB fica como está (connected/extracted). Em memória
+        # podemos limpar pra liberar o subscriber bus do SSE; o DB segue
+        # autoritativo pra UX (dashboard /status, captured_messages).
         payload = await self._store.consume(session_id)
 
-        # 3. Persist the consumed status (best effort).
-        try:
-            await repository.mark_consumed(session_id)
-        except Exception:  # pragma: no cover — defensive
-            logger.exception(
-                "service.consume_extracted.mark_consumed_failed",
-                extra={
-                    "op": "consume_extracted",
-                    "session_id": str(session_id),
-                },
-            )
-
-        # 4. Free the WhatsApp number AND the provider slot — only when
-        # the extract worker has cleanly handed off (status was EXTRACTED).
-        # In every other state we let the uazapi 1h TTL run its course;
-        # killing the instance mid-extract is exactly what made the smoke
-        # fail at 23s instead of completing.
-        if should_release_slot:
-            await self._release_provider_slot(
-                state.uazapi_token, session_id=session_id, op="consume_extracted"
-            )
-        else:
-            logger.info(
-                "service.consume_extracted.release_skipped",
-                extra={
-                    "op": "consume_extracted",
-                    "session_id": str(session_id),
-                    "entry_status": entry_status.value,
-                    "reason": "extract not done yet OR slot already freed upstream",
-                },
-            )
+        # F5: mark_consumed REMOVIDO. Status no DB segue connected/extracted
+        # indefinidamente — webhook continua capturando msgs, user pode
+        # gerar relatórios on-demand quantas vezes quiser.
+        #
+        # F5: release_provider_slot REMOVIDO. Manter a instância uazapi viva
+        # pós-signup é essencial pro forward-capture funcionar. Quando user
+        # quiser desconectar, ele clica "Desconectar" na UI (cancel_session
+        # cuida do delete_instance correto).
 
         logger.info(
             "service.consume_extracted.exit",
             extra={
                 "op": "consume_extracted",
                 "session_id": str(session_id),
-                "status": SessionStatus.CONSUMED.value,
+                "preserved_status": state.status.value,
                 "had_payload": payload is not None,
                 "elapsed_ms": int((time.monotonic() - started) * 1000),
             },
