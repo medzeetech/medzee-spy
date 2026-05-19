@@ -1003,19 +1003,24 @@ class WhatsAppService:
             )
             return None
 
-        # 1b. F8 (2026-05-19): linka user_id na row reports pre-gerada
-        # (criada quando o webhook 'connected' chegou — vide
-        # `_kick_off_pre_generate`). Resultado: row sai de
-        # user_id=NULL → user_id=<novo signup>, e o frontend pós-signup
-        # encontra o relatório PRONTO em /reports/latest.
+        # 1b. F8v2 (2026-05-19): row de report foi PRÉ-CRIADA pelo
+        # webhook 'connected' (`_kick_off_pre_generate`) mas NÃO teve
+        # worker disparado ainda. Aqui linkamos user_id E disparamos o
+        # worker no CAMINHO RÁPIDO (mesmo do botão manual): com user_id
+        # setado, `query_last_n_per_chat(user_id)` lê captured_messages
+        # local em <2s → LLM ~15s → completed.
         #
-        # Também atualiza clinic_segment com o valor real do users_profile
-        # (pre-generate usou default 'outro').
+        # Por que disparar SÓ AGORA (não no webhook): F8v1 tentava sem
+        # user_id (caminho uazapi user_id=NULL) — lento e ignorava
+        # captured_messages que JÁ tinha milhares de msgs do user.
         try:
             from app.modules.reports import repository as reports_repo
+            from app.modules.reports.service import _build_and_run_with_timeout
 
             existing = await reports_repo.get_existing_for_session(session_id)
             if existing is not None:
+                report_id = UUID(str(existing["id"]))
+                report_status = existing.get("status")
                 await reports_repo.link_user(session_id, user_id)
                 logger.info(
                     "service.consume_extracted.linked_pre_report",
@@ -1023,10 +1028,32 @@ class WhatsAppService:
                         "op": "consume_extracted",
                         "session_id": str(session_id),
                         "user_id": str(user_id),
-                        "report_id": str(existing.get("id")),
-                        "report_status": existing.get("status"),
+                        "report_id": str(report_id),
+                        "report_status": report_status,
                     },
                 )
+                # Dispara worker REAL agora que temos user_id. Só faz isso
+                # quando a row ainda está em 'generating' (placeholder do
+                # webhook). Se já está 'completed'/'failed' (re-run), skip.
+                if report_status == "generating":
+                    asyncio.create_task(
+                        _build_and_run_with_timeout(
+                            report_id=report_id,
+                            user_id=user_id,
+                            mode="last_n_per_chat",
+                            n_per_chat=30,
+                            whatsapp_session_id=session_id,
+                        ),
+                        name=f"report-worker-{report_id}",
+                    )
+                    logger.info(
+                        "service.consume_extracted.worker_dispatched",
+                        extra={
+                            "op": "consume_extracted",
+                            "report_id": str(report_id),
+                            "user_id": str(user_id),
+                        },
+                    )
         except Exception:
             logger.warning(
                 "service.consume_extracted.report_link_failed",
@@ -1363,41 +1390,42 @@ def _payload_says_connected(payload: Any) -> bool:
 # ─── F8: pre-generate report on QR connected ──────────────────────────
 
 
-# F8 warmup: tempo que esperamos APÓS webhook 'connected' antes de tentar
-# /chat/find na uazapi. Observação empírica em prod (2026-05-19 02:39):
-# uazapi paid devolve 500 em /chat/find(limit=100) durante 60-120s
-# pós-connect (history sync interno). Retry budget atual (5/10/30/60 =
-# 105s entre tentativas) começa cedo demais e queima o budget tentando
-# antes da uazapi estar pronta. O user está preenchendo o form nesse
-# tempo mesmo — não há custo de UX em esperar.
-#
-# Configurável via env pra ajuste fino sem deploy.
-_PRE_GENERATE_WARMUP_S: float = float(os.environ.get("PRE_GENERATE_WARMUP_S", "90"))
-
-
 async def _kick_off_pre_generate(session_id: UUID) -> None:
-    """F8: dispara pipeline de relatório em background quando WhatsApp
-    conecta — antes do user fazer signup.
+    """F8v2: APENAS cria a row de report (status=generating) — NÃO
+    dispara o worker ainda.
 
-    Cria row reports anônima (user_id=NULL) vinculada à session. Espera
-    PRE_GENERATE_WARMUP_S (60s default) pra uazapi popular cache interno,
-    AÍ roda o worker normal (pull_last_n_per_chat + LLM + persist).
-    Quando user completa signup, `consume_extracted` linka o user_id na
-    row existente. Resultado: relatório pronto IMEDIATO pós-signup.
+    Por quê: o worker REAL é disparado em ``consume_extracted`` (pós-signup),
+    quando user_id já está linkado. Aí o pipeline usa o caminho rápido
+    ``query_last_n_per_chat(user_id)`` que lê direto de captured_messages
+    em <2s (mesmo caminho do botão "Gerar relatório" manual que SEMPRE
+    funciona em 17s).
 
-    Idempotente: se já existe row pra essa session (webhook duplicado,
-    re-scan QR), pula a criação. Best-effort: nenhuma falha aqui pode
-    bloquear o handler do webhook.
+    Bug anterior (F8v1): pre_generate disparava worker com user_id=NULL
+    → caminho uazapi (60-120s warmup + 225s retry) → frágil. Pior:
+    captured_messages tinha milhares de msgs do user IGNORADAS porque
+    sem user_id não dá pra filtrar. Observado em prod 2026-05-19 02:46:
+    captured_messages tinha 7.272 msgs, mas worker estava preso há 205s
+    tentando uazapi.
+
+    Solução: separar responsabilidades:
+      - WEBHOOK 'connected' (esta fn): só CRIA a row pra /reports/latest
+        ter o que pollar imediatamente pós-signup
+      - SIGNUP (consume_extracted): linka user_id + dispara worker REAL
+        no caminho rápido
+
+    UX: user pós-signup vê tela "Gerando" → polla → ~17s depois recebe
+    relatório completo. Igual ao botão manual, sem trade-offs de timing.
+
+    Idempotente: webhook duplicado vê row existente, skip.
     """
     try:
         from app.modules.reports import repository as reports_repo
-        from app.modules.reports.service import _build_and_run_with_timeout
 
-        # Idempotência: se já criou (webhook duplicado), skip.
+        # Idempotência: se já criou (webhook duplicado, re-scan QR), skip.
         existing = await reports_repo.get_existing_for_session(session_id)
         if existing is not None:
             logger.info(
-                "service.pre_generate.already_exists",
+                "service.pre_generate.placeholder_exists",
                 extra={
                     "op": "pre_generate",
                     "session_id": str(session_id),
@@ -1406,57 +1434,28 @@ async def _kick_off_pre_generate(session_id: UUID) -> None:
             )
             return
 
-        # Cria row anônima — user_id=NULL será linkado em consume_extracted.
+        # Cria row placeholder — user_id=NULL será linkado em consume_extracted.
         report_id = await reports_repo.create_generating(
             whatsapp_session_id=session_id,
             user_id=None,
-            clinic_segment="outro",  # default; será atualizado no link
+            clinic_segment="outro",
         )
 
         logger.info(
-            "service.pre_generate.dispatched",
+            "service.pre_generate.placeholder_created",
             extra={
                 "op": "pre_generate",
                 "session_id": str(session_id),
                 "report_id": str(report_id),
-                "warmup_s": _PRE_GENERATE_WARMUP_S,
+                "note": "worker dispatch deferred to consume_extracted (after signup links user_id)",
             },
         )
-
-        # Dispara worker DEPOIS do warmup. Não awaita — fire-and-forget.
-        asyncio.create_task(
-            _delayed_pre_generate_worker(report_id, session_id),
-            name=f"pre-generate-worker-{session_id}",
-        )
+        # NÃO dispara worker — esse trabalho é feito em consume_extracted.
     except Exception:
         logger.exception(
             "service.pre_generate.failed",
             extra={"op": "pre_generate", "session_id": str(session_id)},
         )
-
-
-async def _delayed_pre_generate_worker(report_id: UUID, session_id: UUID) -> None:
-    """Espera warmup, depois chama o worker. Em fire-and-forget."""
-    from app.modules.reports.service import _build_and_run_with_timeout
-
-    if _PRE_GENERATE_WARMUP_S > 0:
-        await asyncio.sleep(_PRE_GENERATE_WARMUP_S)
-
-    logger.info(
-        "service.pre_generate.warmup_done_dispatching_worker",
-        extra={
-            "op": "pre_generate",
-            "session_id": str(session_id),
-            "report_id": str(report_id),
-        },
-    )
-    await _build_and_run_with_timeout(
-        report_id=report_id,
-        user_id=None,
-        mode="last_n_per_chat",
-        n_per_chat=30,
-        whatsapp_session_id=session_id,
-    )
 
 
 __all__ = [
