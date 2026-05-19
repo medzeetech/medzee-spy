@@ -46,11 +46,17 @@ export function useReportPolling(idOrLatest = 'latest') {
   const startRef = useRef(Date.now());
   const aliveRef = useRef(true);
   const refreshedRef = useRef(false);
+  // Fix 2026-05-19: persiste startRef do report através de re-mounts.
+  // Antes, sair da tela e voltar reiniciava elapsedMs em 0 mesmo com o
+  // worker rodando há minutos — barra de progresso voltava a 0%.
+  // Agora prioriza data.created_at como base; mount inicial vira fallback.
+  const reportCreatedAtMsRef = useRef(null);
 
   useEffect(() => {
     aliveRef.current = true;
     startRef.current = Date.now();
     refreshedRef.current = false;
+    reportCreatedAtMsRef.current = null;
     let timer;
 
     const path =
@@ -69,7 +75,10 @@ export function useReportPolling(idOrLatest = 'latest') {
 
     async function tick() {
       if (!aliveRef.current) return;
-      const elapsed = Date.now() - startRef.current;
+      // Prefere created_at do report (preserva tempo real através de
+      // re-mounts). Mount inicial usa startRef até primeiro fetch chegar.
+      const baseMs = reportCreatedAtMsRef.current ?? startRef.current;
+      const elapsed = Date.now() - baseMs;
 
       // Cap absoluto — não fica girando pra sempre.
       if (elapsed > MAX_TOTAL_MS) {
@@ -92,11 +101,19 @@ export function useReportPolling(idOrLatest = 'latest') {
       try {
         const data = await callApi(path, { auth: true });
         if (!aliveRef.current) return;
+        // Caching do created_at no ref pra próximos ticks usarem a base
+        // estável (resiste a re-mount da tela).
+        if (data.created_at && reportCreatedAtMsRef.current === null) {
+          const parsed = new Date(data.created_at).getTime();
+          if (!Number.isNaN(parsed)) reportCreatedAtMsRef.current = parsed;
+        }
+        const baseMsFresh = reportCreatedAtMsRef.current ?? startRef.current;
+        const elapsedFresh = Date.now() - baseMsFresh;
         setSafe({
           status: data.status,
           payload: data.payload,
           error: data.error_code ?? null,
-          elapsedMs: elapsed,
+          elapsedMs: elapsedFresh,
           reportId: data.id ?? null,
           createdAt: data.created_at ?? null,
         });

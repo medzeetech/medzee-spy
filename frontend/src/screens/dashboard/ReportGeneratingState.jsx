@@ -4,41 +4,52 @@ import { useUazapiStats, useWhatsappStatus } from '../../lib/whatsapp.js';
 
 // F5: 3 fases reais + contagem de msgs derivada da porcentagem.
 //
-// Fase 1: COLETANDO        — uazapiStats.chat_count (real, ao vivo)
-//                            + msgs cresce proporcional a pct (mesma curva
-//                            da barra de progresso → UX coesa)
-// Fase 2: SINCRONIZANDO    — chat_count > 0, msgs no total real
-//                            (vem do captured_messages via /whatsapp/status)
-// Fase 3: IA ANALISANDO    — backend já recebeu payload, LLM rodando
-//                            (heurística temporal — uazapiStats não revela isso)
+// Timings calibrados em 2026-05-19 com base no pipeline real:
+//   - Coleta DB (RPC) + transform + metrics: ~2s
+//   - LLM call (~18k tokens in, 4k out, claude-sonnet-4-6): 10-25s
+//   - Persist update_completed (payload jsonb): <1s
+//   - Total esperado: 15-30s no caminho feliz
 //
-// O elapsedMs vem do polling de /api/reports/{id}; >=30s presume LLM.
+// Quando passar de TIMEOUT_HINT_MS (90s) sem terminar, mostra subline
+// honesto avisando que está demorando mais que o normal — o poll continua
+// até atingir o cap de 8min em useReportPolling.
 //
-// A contagem visualmente cresce sincronizada com a porcentagem (mesma
-// derivação temporal), não em curva própria — o user vê "8.623 mensagens"
-// chegar no exato instante em que a barra atinge 50% (fim da fase PULL).
-// Daí em diante (LLM/FINALIZING) congela no total real enquanto a barra
-// continua subindo (mas é o LLM agora, não mais leitura).
+// Fases:
+//   1. PULL (0-5s)        — uazapiStats.chat_count ao vivo, msgs animam
+//                            de 0 → total proporcional a pct
+//   2. LLM  (5-25s)       — backend rodando Claude. Pill IA destaca,
+//                            contagem msgs congela no total real
+//   3. FINALIZING (25-90s) — montagem do payload + persist
+//   4. SLOW (90s+)        — algo travou, mostra hint honesto
+//
+// A contagem visualmente cresce sincronizada com a porcentagem.
 
 const PHASE_PULL = 'pull';
 const PHASE_LLM = 'llm';
 const PHASE_FINALIZING = 'finalizing';
+const PHASE_SLOW = 'slow';
 
-// Fase PULL termina em pct=50% (ver computeProgress). A contagem de msgs
-// é normalizada por esse 50% pra atingir 100% no fim da fase PULL.
-const PULL_END_PCT = 50;
+// Boundaries de tempo em ms (calibradas em 2026-05-19).
+const PHASE_PULL_END_MS = 5_000;
+const PHASE_LLM_END_MS = 25_000;
+const PHASE_FINALIZING_END_MS = 90_000;
+
+// Pct % onde cada fase termina (acompanha a divisão temporal).
+const PULL_END_PCT = 40;
+const LLM_END_PCT = 85;
+const FINALIZING_END_PCT = 96;
+const SLOW_CAP_PCT = 99;
 
 // Quando captured_messages.message_count está em 0 (sessão nova, webhook
 // ainda não chegou OU pipeline F5 vai puxar direto da uazapi via fallback),
-// estimamos o total como chatCount * AVG_MSGS_PER_CHAT. AVG é o n_per_chat
-// padrão do GenerateReportModal (30 = "Recomendado"). É uma estimativa
-// honesta — mostramos com prefixo "~" pra deixar claro.
+// estimamos o total como chatCount * AVG_MSGS_PER_CHAT.
 const AVG_MSGS_PER_CHAT_ESTIMATE = 30;
 
-function pickPhase(elapsedMs, hasData) {
-  if (elapsedMs < 30_000) return hasData ? PHASE_PULL : PHASE_PULL;
-  if (elapsedMs < 90_000) return PHASE_LLM;
-  return PHASE_FINALIZING;
+function pickPhase(elapsedMs) {
+  if (elapsedMs < PHASE_PULL_END_MS) return PHASE_PULL;
+  if (elapsedMs < PHASE_LLM_END_MS) return PHASE_LLM;
+  if (elapsedMs < PHASE_FINALIZING_END_MS) return PHASE_FINALIZING;
+  return PHASE_SLOW;
 }
 
 function StatPill({ Icon, value, label, highlight }) {
@@ -86,19 +97,25 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
     : totalCapturedMsgs;
 
   const hasData = chatCount > 0 || totalMsgs > 0;
-  const phase = pickPhase(elapsedMs, hasData);
+  const phase = pickPhase(elapsedMs);
 
-  // Progresso aproximado: 0-30s = 0-50% (pull), 30-90s = 50-90% (LLM),
-  // 90s+ = 90-98% (finalizing). Cap em 98%.
+  // Progresso calibrado pelos PHASE_*_END_MS. Em SLOW (>90s) cap em 99%
+  // pra indicar "ainda processando mas demorando mais que o esperado".
   let pct;
   if (phase === PHASE_PULL) {
-    pct = Math.min(PULL_END_PCT, (elapsedMs / 30_000) * PULL_END_PCT);
+    pct = (elapsedMs / PHASE_PULL_END_MS) * PULL_END_PCT;
   } else if (phase === PHASE_LLM) {
-    pct = PULL_END_PCT + Math.min(40, ((elapsedMs - 30_000) / 60_000) * 40);
+    const phaseElapsed = elapsedMs - PHASE_PULL_END_MS;
+    const phaseDuration = PHASE_LLM_END_MS - PHASE_PULL_END_MS;
+    pct = PULL_END_PCT + (phaseElapsed / phaseDuration) * (LLM_END_PCT - PULL_END_PCT);
+  } else if (phase === PHASE_FINALIZING) {
+    const phaseElapsed = elapsedMs - PHASE_LLM_END_MS;
+    const phaseDuration = PHASE_FINALIZING_END_MS - PHASE_LLM_END_MS;
+    pct = LLM_END_PCT + (phaseElapsed / phaseDuration) * (FINALIZING_END_PCT - LLM_END_PCT);
   } else {
-    pct = 90 + Math.min(8, ((elapsedMs - 90_000) / 60_000) * 8);
+    pct = SLOW_CAP_PCT;
   }
-  pct = Math.round(pct);
+  pct = Math.min(Math.max(Math.round(pct), 0), 99);
 
   // Contagem de msgs DERIVADA da porcentagem da barra. Normalizada por
   // PULL_END_PCT (50%) pra atingir totalMsgs no exato instante em que a
@@ -137,9 +154,13 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
     } else {
       subline = 'Processando o histórico das suas conversas.';
     }
-  } else {
+  } else if (phase === PHASE_FINALIZING) {
     headline = 'Finalizando seu diagnóstico…';
     subline = 'Montando funil, oportunidades perdidas e benchmarks.';
+  } else {
+    // PHASE_SLOW — algo travou. Honesto.
+    headline = 'Ainda processando…';
+    subline = `A análise está demorando mais que o normal (${Math.round(elapsedMs / 1000)}s). Estamos aguardando o servidor responder — se passar de alguns minutos, volte aos relatórios e tente gerar de novo.`;
   }
 
   return (

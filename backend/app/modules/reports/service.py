@@ -139,7 +139,7 @@ class ReportService:
         )
 
         asyncio.create_task(
-            _build_and_run(
+            _build_and_run_with_timeout(
                 report_id=report_id,
                 user_id=user_id,
                 mode=mode,
@@ -150,6 +150,46 @@ class ReportService:
             name=f"report-{report_id}",
         )
         return report_id
+
+
+# Timeout absoluto do pipeline inteiro (collect + _inner + persist).
+# `_inner` do worker já tem wait_for(120s), mas observamos em prod
+# (2026-05-19, report 2629641a) reports travados em `generating` por
+# 7+ minutos — algum await externo ao _inner (provavelmente httpx
+# Anthropic hang sem timeout efetivo) escapava da proteção. Wrap externo
+# garante hard kill.
+#
+# 180s = 3min. Pipeline real esperado: 15-30s. 180s cobre confortável
+# casos lentos (LLM ~60s, persist payload grande ~5s), e mata
+# definitivamente qualquer hang acima disso.
+_PIPELINE_HARD_TIMEOUT_S: float = 180.0
+
+
+async def _build_and_run_with_timeout(**kwargs) -> None:
+    """Wrap _build_and_run com timeout absoluto + marca failed em hang."""
+    report_id = kwargs.get("report_id")
+    try:
+        await asyncio.wait_for(
+            _build_and_run(**kwargs),
+            timeout=_PIPELINE_HARD_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "service.reports.pipeline_hard_timeout",
+            extra={
+                "report_id": str(report_id) if report_id else None,
+                "timeout_s": _PIPELINE_HARD_TIMEOUT_S,
+            },
+        )
+        try:
+            await repository.update_failed(
+                report_id, error_code="pipeline_hard_timeout"
+            )
+        except Exception:
+            logger.exception(
+                "service.reports.pipeline_hard_timeout.persist_failed",
+                extra={"report_id": str(report_id) if report_id else None},
+            )
 
 
 # ─── F4 helpers (módulo-level pra serem testáveis sem instanciar service) ─
