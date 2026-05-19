@@ -4,6 +4,7 @@ import { User, Mail, Phone, ArrowRight, ArrowLeft, Volume2, Lock, DollarSign, Ey
 import { COLORS } from '../constants/colors.js';
 import Logo from '../components/Logo.jsx';
 import { api } from '../lib/api.js';
+import { generateReport } from '../lib/reports.js';
 import { supabase } from '../lib/supabase.js';
 import resultadoAudio from '../assets/resultado.mp3';
 
@@ -132,11 +133,43 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = true, whats
         });
       }
       onSubmit?.(payload);
-      // F1 reativado: extract worker dispara pós-conexão e já existe um
-      // placeholder de reports criado em consume_extracted. Mandar pra
-      // /app/reports/latest pra usuário ver "Análise IA em curso" e o
-      // relatório auto aparecer assim que o worker finalizar.
-      navigate('/app/reports/latest');
+
+      // F7: orquestração frontend signup → generate → navega.
+      // O coração do produto Medzee Spy é o relatório aparecendo
+      // IMEDIATAMENTE após cadastro — sem fricção de "clique pra gerar".
+      // F1 extract_30d_pipeline foi deprecated (matava instâncias),
+      // então o frontend dispara o generate explicitamente aqui.
+      //
+      // Fallbacks:
+      //   - sem whatsappSessionId  → vai pra dashboard (caminho raro)
+      //   - generate falha         → /app/reports/latest com fallback
+      //                              graceful (user pode clicar "Gerar"
+      //                              manualmente no botão da lista)
+      if (whatsappSessionId) {
+        try {
+          console.info('[F7] auto-generate dispatch', {
+            whatsappSessionId,
+            n_per_chat: 30,
+          });
+          const generated = await generateReport({ n_per_chat: 30 });
+          const reportId = generated?.report_id;
+          if (reportId) {
+            navigate(`/app/reports/${reportId}`);
+            return;
+          }
+          // Sem report_id no retorno — comportamento defensivo.
+          navigate('/app/reports/latest');
+          return;
+        } catch (genErr) {
+          console.warn('[F7] auto-generate failed, fallback latest', genErr);
+          navigate('/app/reports/latest');
+          return;
+        }
+      }
+
+      // Sem session whatsapp linkada — caminho raro (re-login? signup
+      // sem passar pelo /spy?). Dashboard mostra o CTA "Conectar WhatsApp".
+      navigate('/app/dashboard');
     } catch (err) {
       if (err?.status === 409) {
         navigate(`/login?email=${encodeURIComponent(normalizedEmail)}`);

@@ -4,6 +4,11 @@
 
 ## Decisões
 
+- **D11 (2026-05-19 — F7) — Composição "signup + auto-generate" vive no frontend, não no backend.**
+  Por quê: o relatório precisa aparecer IMEDIATAMENTE após signup (coração do produto). Como F1 extract_30d_pipeline foi deprecated (D8 + Bug 2 de 3ca748e: matava instâncias), alguém precisa orquestrar o `POST /api/reports/generate` pós-signup. Alternativas avaliadas: (1) backend signup chamar reports.service — acopla auth a reports, anti-padrão; (2) background task FastAPI — invisível pro frontend, sem report_id pra navegar imediato; (3) frontend orquestra após signup — escolhido.
+  Como aplicar: `LeadFormScreen.handleSubmit` dispara `generateReport({n_per_chat: 30})` logo após `setSession`, navega pra `/app/reports/{report_id}`. Fallback graceful se falhar (`/app/reports/latest`). `auth.service` continua single-purpose.
+  Trade-off aceito: 1 round-trip extra no signup (+200-500ms). Vale por manter boundaries de módulo limpos e dar UX imediata.
+
 - **D9 (2026-05-18 — F5 pivot) — Coleta por "últimas N mensagens de cada conversa" em vez de janela temporal.**
   Por quê: empiricamente, uazapi paid não entrega histórico antigo via `cutoff_ts`. `/chat/find` lista conversas; `/message/history-sync` popula o cache; `/message/find` lê o que foi sincronizado — mas com sincronização limitada às últimas N mensagens por chat (não retroativa). Filtrar por dias descartava quase tudo. Estratégia nova: pedir as últimas N (default 30) de CADA conversa, sem janela temporal. Funciona em qualquer tier.
   Como aplicar: pipeline `pull_last_n_per_chat(provider, token, *, n_per_chat=30)` em `app/workers/extract.py`. ReportService aceita `mode='last_n_per_chat'|'window_days'` (default last_n). Modal frontend mostra 10/20/30/50 msgs por conversa em vez de 7/15/30/60 dias.
@@ -175,7 +180,8 @@
 - [x] ~~F5 last-N per chat + relatório sempre gera~~ — 2026-05-18. Spec em `.specs/features/f5-last-n-per-chat/`. Backend + frontend completos.
 - [x] ~~F5 smoke E2E~~ — confirmado 2026-05-19 (mesmo run do F4 smoke).
 - [x] ~~**F6 — DX & Docs**~~ — 2026-05-19. README raiz, .env.example refinados, `package.json` raiz com `npm run dev` (concurrently), .gitignore atualizado.
-- [ ] **F7 — Route guards (opcional)** — guard de rota autenticada em `/app/*`. Pequeno (~30min). Não bloqueia M1.
+- [x] ~~**F7 — Auto-Generate Report on Signup**~~ — 2026-05-19. Branch `feat/f7-auto-generate-on-signup`. LeadFormScreen orquestra signup → generate → navigate. Coração do produto restaurado.
+- [ ] **F8 — Route guards (opcional)** — guard de rota autenticada em `/app/*`. Pequeno (~30min). Não bloqueia M1.
 
 ## Ideias adiadas
 

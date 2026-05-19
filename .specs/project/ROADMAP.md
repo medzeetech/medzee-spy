@@ -1,7 +1,7 @@
 # Roadmap
 
 **Current Milestone:** M1 — Fluxo ponta a ponta funcional
-**Status:** ✅ COMPLETE smoke E2E em prod (2026-05-19). F1 deprecated · F2/F3/F4/F5/F6 ✅ done · F7 (route guards opcional) pendente.
+**Status:** ✅ COMPLETE smoke E2E em prod (2026-05-19). F1 deprecated · F2/F3/F4/F5/F6/F7 ✅ done · F8 (route guards opcional) pendente.
 
 ---
 
@@ -84,13 +84,23 @@ sem mudança.
 
 **Commits-chave:** `abb01aa` (F4 specs), `e0c06f9` (F5 spec+code), `3ca748e` (fixes smoke F4), `351ec41` (dashboard LiveStats), `fe1ea8c` (stats count exact + period_days fix), `ad64b99` (RPC window function), `191f0e8` (ReportTopbar real), `85f88df` (contagem animada).
 
+**F7 — Auto-Generate Report on Signup** — ✅ COMPLETE (2026-05-19)
+- **Por quê**: o coração do produto era "scan QR → cadastro → relatório PRONTO". Após desligar F1 extract_30d_pipeline (matava instâncias), o signup parava em `/app/reports/latest` que dava 404 — user via tela vazia sem ação clara. Quebrava 100% a promessa de valor da landing.
+- **Solução**: `LeadFormScreen.handleSubmit` agora dispara `POST /api/reports/generate` (mode=last_n_per_chat, n=30) logo após signup OK e navega pra `/app/reports/{report_id}` em vez de `/latest`. ReportGeneratingState polla e mostra fases reais (calibradas em commits anteriores: 15-30s typical, 180s hard timeout).
+- **Composição no frontend** (decisão D11): evita acoplar `auth.service` a `reports.service` no backend. Frontend orquestra signup → generate → navigate; backend mantém boundaries de módulo.
+- **Fallbacks**: se generate falhar, fallback graceful pra `/app/reports/latest` (com CTA "Gerar relatório" disponível). Sem `whatsappSessionId`, navega pra dashboard.
+
+**Arquivos-chave:** spec em `.specs/features/f7-auto-generate-on-signup/`. Frontend: `screens/LeadFormScreen.jsx`. Backend: nenhuma mudança (pipeline F5 já estava pronto).
+
+**Commits-chave:** `<TBD>` (F7 implementação).
+
 **F6 — DX & Docs** — ✅ COMPLETE (2026-05-19)
 - `README.md` na raiz: visão geral, stack, setup local passo-a-passo, migrações, estrutura, fluxos, comandos úteis, deploy, troubleshooting
 - `backend/.env.example` e `frontend/.env.example` refinados com todos os campos atuais + comentários explicativos + referências a decisões/lições do STATE
 - `package.json` raiz com `npm run dev` (sobe backend + frontend em paralelo via `concurrently`) + scripts `install:all`, `test:backend`, `lint:frontend`, `build:frontend`
 - `.gitignore` atualizado pra `node_modules/`, `frontend/dist/`, logs
 
-**F7 — Route guards (opcional)** — guard de rota autenticada em /app/*. Resíduo do plano original F4 "Frontend Integration" não absorvido por F2/F3. Pequeno (~30 min). Não bloqueia M1 mas vale fazer antes de prod pública.
+**F8 — Route guards (opcional)** — guard de rota autenticada em /app/*. Resíduo do plano original F4 "Frontend Integration" não absorvido por F2/F3. Pequeno (~30 min). Não bloqueia M1 mas vale fazer antes de prod pública.
 
 ---
 
