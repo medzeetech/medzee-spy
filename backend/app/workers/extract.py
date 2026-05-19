@@ -1112,4 +1112,306 @@ async def pull_last_n_per_chat(
     return payload
 
 
-__all__ = ["extract_30d_pipeline", "pull_history", "pull_last_n_per_chat"]
+# ─── F9 (2026-05-19): fill_captured_messages_loop ──────────────────────
+#
+# Por que existir: até agora, captured_messages só era populada por
+# webhook 'messages' (que o tier paid raramente entrega) OU pelo clique
+# manual do user em "Gerar relatório" (que tem que esperar 60s+ de
+# warmup uazapi). User reclamou com razão: "o backend salva a conexão
+# no bd e acabou — por que não popula captured_messages enquanto eu
+# preencho o LeadForm?"
+#
+# Solução: trigger persistente disparado no webhook 'connected'.
+# Aguarda user_id ser linkado (signup pode demorar 30-90s) e então roda
+# ciclos repetidos de pull + insert até captured_messages ter dados.
+# Quando o user clica "Gerar relatório" pós-login, os dados JÁ ESTÃO lá
+# (caminho rápido do ReportService: captured_messages → relatório em ~17s).
+
+
+_FILL_LOOP_POLL_USER_S: float = 5.0
+_FILL_LOOP_MAX_WAIT_USER_S: float = 900.0   # 15min pro user finalizar signup
+_FILL_LOOP_MAX_TOTAL_S: float = 1800.0      # 30min budget total
+_FILL_LOOP_BACKOFF_S: float = 60.0          # entre ciclos
+
+
+async def fill_captured_messages_loop(
+    session_id: UUID,
+    *,
+    n_per_chat: int = 30,
+    poll_user_s: float = _FILL_LOOP_POLL_USER_S,
+    max_wait_user_s: float = _FILL_LOOP_MAX_WAIT_USER_S,
+    max_total_s: float = _FILL_LOOP_MAX_TOTAL_S,
+    backoff_s: float = _FILL_LOOP_BACKOFF_S,
+) -> None:
+    """Loop persistente que popula ``captured_messages`` pós-connected.
+
+    Disparado fire-and-forget pelo ``_handle_connection_event`` após o
+    webhook indicar status=connected. Roda totalmente em background; o
+    user nunca espera por ele.
+
+    Fluxo:
+        1. Aguarda ``user_id`` ser linkado na session (poll do store + DB).
+           Necessário porque o fluxo de funil cria session anônima primeiro,
+           só linka user_id quando ``consume_extracted`` roda no signup.
+        2. Resolve ``uazapi_token`` (store ou DB fallback).
+        3. Ciclos de ``pull_last_n_per_chat`` + INSERT em captured_messages
+           até count ≥ 1 OU ``max_total_s``.
+
+    Idempotente: a cada ciclo confere ``stats_for_session`` antes do pull
+    — outro ciclo, webhook forward-capture, ou clique manual em "Gerar
+    relatório" pode ter populado entre nossas iterações. Saímos cedo se
+    sim.
+
+    Fire-and-forget: erros logados e silenciados (nunca raise pra fora,
+    o caller é um ``asyncio.create_task`` sem awaiter).
+    """
+    # Imports lazy pra evitar ciclos (worker → service → state → worker).
+    from app.clients.whatsapp import get_provider
+    from app.modules.captured_messages import repository as cm_repo
+    from app.modules.captured_messages.schemas import CapturedMessageInsert
+
+    started = time.monotonic()
+    logger.info(
+        "fill_loop.start",
+        extra={
+            "op": "fill_captured_messages_loop",
+            "session_id": str(session_id),
+            "n_per_chat": n_per_chat,
+        },
+    )
+
+    # Idempotência inicial: se outro path (webhook forward-capture, run
+    # anterior pré-restart) já populou, saímos sem fazer nada.
+    try:
+        existing = await cm_repo.stats_for_session(session_id)
+        if existing.get("message_count", 0) > 0:
+            logger.info(
+                "fill_loop.already_populated_skip",
+                extra={
+                    "op": "fill_captured_messages_loop",
+                    "session_id": str(session_id),
+                    "existing_count": existing.get("message_count"),
+                },
+            )
+            return
+    except Exception:
+        pass  # falha de count não impede fluxo principal
+
+    # Fase 1: aguardar user_id ser linkado (store OU DB).
+    user_id: UUID | None = None
+    while time.monotonic() - started < max_wait_user_s:
+        state = await session_store.get(session_id)
+        if state is not None and state.user_id is not None:
+            user_id = state.user_id
+            break
+        # DB fallback: signup chama repository.link_user mas NÃO mexe no store.
+        # E após restart do backend, store fica vazio.
+        try:
+            row = await repository.get(session_id)
+            if row and row.get("user_id"):
+                user_id = UUID(str(row["user_id"]))
+                break
+        except Exception:
+            pass
+        await asyncio.sleep(poll_user_s)
+
+    if user_id is None:
+        logger.warning(
+            "fill_loop.no_user_linked_giveup",
+            extra={
+                "op": "fill_captured_messages_loop",
+                "session_id": str(session_id),
+                "waited_s": int(time.monotonic() - started),
+            },
+        )
+        return
+
+    # Resolve uazapi_token (store ou DB).
+    session_token: str | None = None
+    state = await session_store.get(session_id)
+    if state is not None:
+        session_token = state.uazapi_token
+    if not session_token:
+        try:
+            row = await repository.get(session_id)
+            if row:
+                session_token = row.get("uazapi_token")
+        except Exception:
+            logger.warning(
+                "fill_loop.resolve_token_failed",
+                extra={
+                    "op": "fill_captured_messages_loop",
+                    "session_id": str(session_id),
+                },
+                exc_info=True,
+            )
+
+    if not session_token:
+        logger.warning(
+            "fill_loop.no_token_giveup",
+            extra={
+                "op": "fill_captured_messages_loop",
+                "session_id": str(session_id),
+            },
+        )
+        return
+
+    logger.info(
+        "fill_loop.user_resolved",
+        extra={
+            "op": "fill_captured_messages_loop",
+            "session_id": str(session_id),
+            "user_id": str(user_id),
+            "wait_user_s": int(time.monotonic() - started),
+        },
+    )
+
+    # Fase 2: ciclos pull + insert até captured_messages ter dados.
+    provider = get_provider()
+    cycle = 0
+    while time.monotonic() - started < max_total_s:
+        cycle += 1
+
+        # Idempotência por ciclo: outra fonte pode ter populado.
+        try:
+            existing = await cm_repo.stats_for_session(session_id)
+            if existing.get("message_count", 0) > 0:
+                logger.info(
+                    "fill_loop.populated_by_other_path",
+                    extra={
+                        "op": "fill_captured_messages_loop",
+                        "session_id": str(session_id),
+                        "cycle": cycle,
+                        "existing_count": existing.get("message_count"),
+                    },
+                )
+                return
+        except Exception:
+            pass
+
+        logger.info(
+            "fill_loop.cycle_start",
+            extra={
+                "op": "fill_captured_messages_loop",
+                "session_id": str(session_id),
+                "cycle": cycle,
+                "elapsed_s": int(time.monotonic() - started),
+            },
+        )
+
+        try:
+            payload = await pull_last_n_per_chat(
+                provider, session_token, n_per_chat=n_per_chat
+            )
+        except Exception:
+            logger.warning(
+                "fill_loop.pull_failed",
+                extra={
+                    "op": "fill_captured_messages_loop",
+                    "session_id": str(session_id),
+                    "cycle": cycle,
+                },
+                exc_info=True,
+            )
+            await asyncio.sleep(backoff_s)
+            continue
+
+        # Converte ConversationPayload (in-memory shape) → CapturedMessageInsert
+        # (DB shape). MessagePayload.ts é unix seconds; capturado.ts é datetime.
+        inserts: list[CapturedMessageInsert] = []
+        for conv in payload.conversations:
+            for m in conv.messages:
+                try:
+                    ts_dt = datetime.fromtimestamp(int(m.ts), tz=timezone.utc)
+                except (OSError, OverflowError, ValueError, TypeError):
+                    continue
+                inserts.append(
+                    CapturedMessageInsert(
+                        user_id=user_id,
+                        whatsapp_session_id=session_id,
+                        wa_chatid=conv.wa_chatid,
+                        contact_name=conv.contact_name,
+                        ts=ts_dt,
+                        is_from_me=m.from_me,
+                        message_type=m.type,  # type: ignore[arg-type]
+                        text=m.text,
+                        # Sem raw_message_id — pull_last_n não preserva o id
+                        # original. Sem ele a unique partial index não atua,
+                        # então re-runs podem duplicar. Trade-off aceito: o
+                        # loop normalmente sai cedo após o 1º ciclo bem
+                        # sucedido (a checagem inicial captura).
+                    )
+                )
+
+        if not inserts:
+            logger.info(
+                "fill_loop.empty_payload_retry",
+                extra={
+                    "op": "fill_captured_messages_loop",
+                    "session_id": str(session_id),
+                    "cycle": cycle,
+                    "partial": payload.partial,
+                },
+            )
+            await asyncio.sleep(backoff_s)
+            continue
+
+        try:
+            inserted = await cm_repo.insert_many(inserts)
+        except Exception:
+            logger.warning(
+                "fill_loop.insert_failed",
+                extra={
+                    "op": "fill_captured_messages_loop",
+                    "session_id": str(session_id),
+                    "cycle": cycle,
+                    "candidates": len(inserts),
+                },
+                exc_info=True,
+            )
+            await asyncio.sleep(backoff_s)
+            continue
+
+        logger.info(
+            "fill_loop.cycle_inserted",
+            extra={
+                "op": "fill_captured_messages_loop",
+                "session_id": str(session_id),
+                "cycle": cycle,
+                "candidates": len(inserts),
+                "inserted": inserted,
+                "elapsed_total_s": int(time.monotonic() - started),
+            },
+        )
+        if inserted > 0:
+            logger.info(
+                "fill_loop.success",
+                extra={
+                    "op": "fill_captured_messages_loop",
+                    "session_id": str(session_id),
+                    "cycles": cycle,
+                    "total_inserted": inserted,
+                    "elapsed_total_s": int(time.monotonic() - started),
+                },
+            )
+            return
+
+        await asyncio.sleep(backoff_s)
+
+    logger.warning(
+        "fill_loop.budget_exhausted",
+        extra={
+            "op": "fill_captured_messages_loop",
+            "session_id": str(session_id),
+            "cycles": cycle,
+            "elapsed_s": int(time.monotonic() - started),
+        },
+    )
+
+
+__all__ = [
+    "extract_30d_pipeline",
+    "pull_history",
+    "pull_last_n_per_chat",
+    "fill_captured_messages_loop",
+]
