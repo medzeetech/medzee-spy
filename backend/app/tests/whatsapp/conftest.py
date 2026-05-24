@@ -24,6 +24,26 @@ from app.core.config import settings
 
 
 @pytest.fixture(autouse=True)
+def _pin_whatsapp_provider_to_uazapi(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Pin ``WHATSAPP_PROVIDER=uazapi`` for the whatsapp test package (F8-T9).
+
+    The /api/whatsapp/* router is gated behind the provider flag — when the
+    flag is ``extension`` (the prod default after F8 cutover) every route
+    returns 410. The whatsapp tests in this package all exercise the legacy
+    uazapi surface, so we set the flag back to ``uazapi`` once per test.
+
+    ``test_provider_flag.py`` is the only file in this package that needs to
+    flip the flag itself; it skips this autouse pin by checking the test
+    module name and bowing out, then sets the flag per-test.
+    """
+    if request.node.module.__name__.endswith("test_provider_flag"):
+        return
+    monkeypatch.setattr(settings, "WHATSAPP_PROVIDER", "uazapi")
+
+
+@pytest.fixture(autouse=True)
 def _disable_extract_post_connected_delay(monkeypatch: pytest.MonkeyPatch) -> None:
     """B3 fix introduced a 5s sleep before the first /chat/find. Tests would
     otherwise spend an extra 5s per extract scenario — autouse this patch so

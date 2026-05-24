@@ -141,6 +141,37 @@ async def get_install(install_id: str) -> dict | None:
     return row
 
 
+async def get_install_for_user(user_id: UUID) -> dict | None:
+    """Return the most recently-seen install row for ``user_id`` or ``None``.
+
+    Used by :func:`app.modules.extension.service.get_status` to answer the
+    "is this user paired?" question without forcing the frontend to track
+    ``install_id``. If multiple installs belong to the same user (re-pair
+    from a second device, browser reinstall), we return the row with the
+    most recent ``last_seen_at`` so ``paired=True`` reflects the live one.
+    """
+    user_id_str = str(user_id)
+
+    def _run() -> Any:
+        return (
+            _installs()
+            .select("*")
+            .eq("user_id", user_id_str)
+            .order("last_seen_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+    result = await asyncio.to_thread(_run)
+    rows: list[dict] = getattr(result, "data", None) or []
+    row = rows[0] if rows else None
+    logger.info(
+        "repo.extension.get_install_for_user",
+        extra={"user_id": user_id_str, "found": row is not None},
+    )
+    return row
+
+
 async def touch_install(install_id: str) -> None:
     """Bump ``last_seen_at = NOW()`` on the install row.
 
@@ -302,6 +333,7 @@ async def insert_mobile_lead(item: MobileRedirectLeadCreate) -> None:
 __all__ = [
     "upsert_install",
     "get_install",
+    "get_install_for_user",
     "touch_install",
     "get_or_create_extension_session",
     "insert_telemetry",
