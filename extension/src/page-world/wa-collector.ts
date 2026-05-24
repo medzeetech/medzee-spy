@@ -16,6 +16,15 @@ import "@wppconnect/wa-js"; // self-attaches WPP global on load
 import { chunkMessages } from "../lib/chunker.js";
 import type { ExtensionMessage } from "../lib/messages.js";
 
+// VERY VISIBLE marker — proves the page-world script actually loaded.
+// If you see this in the web.whatsapp.com console, MAIN-world injection
+// worked. If you DON'T see it, the script is being blocked somehow.
+// eslint-disable-next-line no-console
+console.log(
+  "%c[MEDZEE WA-COLLECTOR] MAIN-world script loaded ✓",
+  "background:#FFA500;color:#000;padding:4px 8px;font-weight:bold",
+);
+
 const EXT_VERSION = "1.0.0"; // page-world has no chrome.runtime — version is hard-coded from manifest; T10 will keep sync.
 
 // --- type aliases for the wa-js globals (loose; runtime may evolve) ------
