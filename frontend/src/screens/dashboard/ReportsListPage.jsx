@@ -1,7 +1,9 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { FileText, Clock, Zap, CalendarClock, Play, Settings2, Check } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { FileText, Clock, Zap, CalendarClock, Settings2, Check } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
+import { listReports } from '../../lib/reports.js';
+import GenerateReportModal from './GenerateReportModal.jsx';
 
 const FREQUENCY_OPTIONS = [
   { label: '7 dias', value: 7 },
@@ -10,21 +12,65 @@ const FREQUENCY_OPTIONS = [
   { label: '60 dias', value: 60 },
 ];
 
-const MOCK_REPORTS = [
-  { id: '1', date: '2026-05-16T10:30:00', type: 'manual', messages: 3370, score: 42 },
-  { id: '2', date: '2026-04-16T09:00:00', type: 'frequency', messages: 2840, score: 38 },
-  { id: '3', date: '2026-03-16T09:00:00', type: 'frequency', messages: 2150, score: 35 },
-  { id: '4', date: '2026-02-14T14:22:00', type: 'manual', messages: 1920, score: 31 },
-];
+const TERMINAL = new Set(['completed', 'partial', 'failed']);
 
-function formatDate(iso) {
+function formatDateTimePt(iso) {
+  if (!iso) return '—';
   const d = new Date(iso);
-  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
+  if (Number.isNaN(d.getTime())) return '—';
+  const date = d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const time = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  return `${date} às ${time}`;
 }
 
-function formatTime(iso) {
-  const d = new Date(iso);
-  return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+function GeneratingChip() {
+  return (
+    <span
+      className="inline-flex items-center"
+      style={{
+        gap: 8,
+        padding: '6px 12px',
+        borderRadius: 99,
+        background: 'rgba(255,107,53,0.1)',
+        border: '1px solid rgba(255,107,53,0.25)',
+        color: COLORS.orangeDeep,
+        fontSize: 12,
+        fontWeight: 700,
+        letterSpacing: '0.02em',
+      }}
+    >
+      <span
+        className="anim-pulse-dot"
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: 99,
+          background: COLORS.orange,
+          boxShadow: '0 0 8px rgba(255,107,53,0.6)',
+        }}
+      />
+      Gerando...
+    </span>
+  );
+}
+
+function FailedChip() {
+  return (
+    <span
+      style={{
+        padding: '4px 10px',
+        borderRadius: 99,
+        background: 'rgba(92,29,46,0.1)',
+        color: COLORS.wine,
+        fontSize: 11.5,
+        fontWeight: 700,
+        textTransform: 'uppercase',
+        letterSpacing: '0.1em',
+      }}
+    >
+      Falhou
+    </span>
+  );
 }
 
 export default function ReportsListPage() {
@@ -32,6 +78,34 @@ export default function ReportsListPage() {
   const [frequencyEnabled, setFrequencyEnabled] = useState(true);
   const [frequencyDays, setFrequencyDays] = useState(30);
   const [showFreqConfig, setShowFreqConfig] = useState(false);
+
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    listReports({ page: 1 })
+      .then((res) => {
+        if (!alive) return;
+        setData(res);
+        setError(null);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setError(e);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const items = data?.items ?? [];
 
   return (
     <div style={{ maxWidth: 800 }}>
@@ -46,7 +120,7 @@ export default function ReportsListPage() {
         </div>
         <button
           type="button"
-          onClick={() => navigate('/app/reports/new')}
+          onClick={() => setModalOpen(true)}
           className="inline-flex items-center transition-all"
           style={{
             gap: 8,
@@ -131,7 +205,6 @@ export default function ReportsListPage() {
             >
               <Settings2 size={14} />
             </button>
-            {/* Toggle */}
             <button
               type="button"
               onClick={() => setFrequencyEnabled((v) => !v)}
@@ -192,90 +265,164 @@ export default function ReportsListPage() {
       </div>
 
       {/* Reports list */}
-      <div className="flex flex-col" style={{ gap: 10 }}>
-        {MOCK_REPORTS.map((report) => (
-          <button
-            key={report.id}
-            type="button"
-            onClick={() => navigate(`/app/reports/${report.id}`)}
-            className="flex items-center justify-between transition-all"
-            style={{
-              padding: '16px 20px',
-              borderRadius: 14,
-              border: `1px solid ${COLORS.hairline}`,
-              background: COLORS.paper,
-              cursor: 'pointer',
-              width: '100%',
-              textAlign: 'left',
-              fontFamily: "'Red Hat Display', sans-serif",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = 'rgba(255,107,53,0.3)';
-              e.currentTarget.style.boxShadow = '0 4px 16px -4px rgba(0,0,0,0.08)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = COLORS.hairline;
-              e.currentTarget.style.boxShadow = 'none';
-            }}
-          >
-            <div className="flex items-center" style={{ gap: 14 }}>
-              <div
+      {loading && (
+        <div
+          style={{
+            padding: '40px 20px',
+            borderRadius: 14,
+            border: `1px solid ${COLORS.hairline}`,
+            background: COLORS.paper,
+            textAlign: 'center',
+            color: COLORS.inkSoft,
+            fontSize: 13.5,
+          }}
+        >
+          Carregando relatórios...
+        </div>
+      )}
+
+      {!loading && error && (
+        <div
+          style={{
+            padding: '20px',
+            borderRadius: 14,
+            border: `1px solid ${COLORS.hairline}`,
+            background: COLORS.paper,
+            color: COLORS.wine,
+            fontSize: 13.5,
+            fontWeight: 500,
+          }}
+        >
+          Não foi possível carregar os relatórios. Atualize a página.
+        </div>
+      )}
+
+      {!loading && !error && items.length === 0 && (
+        <div
+          style={{
+            padding: '32px 24px',
+            borderRadius: 14,
+            border: `1px dashed ${COLORS.hairline}`,
+            background: COLORS.paper,
+            color: COLORS.inkSoft,
+            fontSize: 13.5,
+            lineHeight: 1.5,
+            textAlign: 'center',
+          }}
+        >
+          <FileText size={24} style={{ color: COLORS.inkMute, marginBottom: 10 }} />
+          <div>
+            Sem relatórios ainda. Gere sua primeira análise pela{' '}
+            <Link to="/app/whatsapp" style={{ color: COLORS.orange, fontWeight: 600 }}>
+              extensão Medzee Spy
+            </Link>
+            .
+          </div>
+        </div>
+      )}
+
+      {!loading && !error && items.length > 0 && (
+        <div className="flex flex-col" style={{ gap: 10 }}>
+          {items.map((report) => {
+            const isGenerating = !TERMINAL.has(report.status);
+            const isFailed = report.status === 'failed';
+            return (
+              <Link
+                key={report.id}
+                to={`/app/reports/${report.id}`}
+                className="flex items-center justify-between transition-all"
                 style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 10,
-                  background: report.type === 'frequency' ? 'rgba(184,168,217,0.15)' : 'rgba(255,107,53,0.1)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: report.type === 'frequency' ? COLORS.lavender : COLORS.orange,
-                  flexShrink: 0,
+                  padding: '16px 20px',
+                  borderRadius: 14,
+                  border: `1px solid ${COLORS.hairline}`,
+                  background: COLORS.paper,
+                  cursor: 'pointer',
+                  width: '100%',
+                  textAlign: 'left',
+                  textDecoration: 'none',
+                  fontFamily: "'Red Hat Display', sans-serif",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255,107,53,0.3)';
+                  e.currentTarget.style.boxShadow = '0 4px 16px -4px rgba(0,0,0,0.08)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = COLORS.hairline;
+                  e.currentTarget.style.boxShadow = 'none';
                 }}
               >
-                {report.type === 'frequency' ? <CalendarClock size={18} /> : <Zap size={18} />}
-              </div>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.ink }}>
-                  Diagnóstico · {formatDate(report.date)}
-                </div>
-                <div className="flex items-center" style={{ gap: 12, marginTop: 2 }}>
-                  <span className="inline-flex items-center" style={{ gap: 4, fontSize: 12, color: COLORS.inkMute }}>
-                    <Clock size={11} /> {formatTime(report.date)}
-                  </span>
-                  <span
-                    className="inline-flex items-center"
+                <div className="flex items-center" style={{ gap: 14 }}>
+                  <div
                     style={{
-                      gap: 4,
-                      fontSize: 11,
-                      padding: '2px 8px',
-                      borderRadius: 6,
-                      background: report.type === 'frequency' ? 'rgba(184,168,217,0.15)' : 'rgba(255,107,53,0.08)',
-                      color: report.type === 'frequency' ? '#7B6BA8' : COLORS.orange,
-                      fontWeight: 600,
+                      width: 40,
+                      height: 40,
+                      borderRadius: 10,
+                      background: 'rgba(255,107,53,0.1)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: COLORS.orange,
+                      flexShrink: 0,
                     }}
                   >
-                    {report.type === 'frequency' ? 'Frequência' : 'Pontual'}
-                  </span>
-                  <span style={{ fontSize: 12, color: COLORS.inkMute }}>
-                    {report.messages.toLocaleString('pt-BR')} msgs
-                  </span>
+                    <Zap size={18} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.ink }}>
+                      Diagnóstico · {formatDateTimePt(report.created_at)}
+                    </div>
+                    <div className="flex items-center" style={{ gap: 12, marginTop: 4 }}>
+                      {typeof report.message_count === 'number' && (
+                        <span className="inline-flex items-center" style={{ gap: 4, fontSize: 12, color: COLORS.inkMute }}>
+                          <Clock size={11} />
+                          {report.message_count.toLocaleString('pt-BR')} mensagens
+                        </span>
+                      )}
+                      {typeof report.period_days === 'number' && (
+                        <span className="inline-flex items-center" style={{ gap: 4, fontSize: 12, color: COLORS.inkMute }}>
+                          <CalendarClock size={11} />
+                          Análise de {report.period_days} dias
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-            <div
-              style={{
-                fontSize: 22,
-                fontWeight: 800,
-                color: COLORS.orange,
-                letterSpacing: '-0.02em',
-              }}
-            >
-              {report.score}
-              <span style={{ fontSize: 12, color: COLORS.inkMute, fontWeight: 500 }}>/100</span>
-            </div>
-          </button>
-        ))}
-      </div>
+
+                <div className="flex items-center" style={{ gap: 12 }}>
+                  {isGenerating ? (
+                    <GeneratingChip />
+                  ) : isFailed ? (
+                    <FailedChip />
+                  ) : (
+                    <div
+                      style={{
+                        fontSize: 22,
+                        fontWeight: 800,
+                        color: COLORS.orange,
+                        letterSpacing: '-0.02em',
+                      }}
+                    >
+                      {typeof report.score === 'number' ? report.score : '—'}
+                      <span style={{ fontSize: 12, color: COLORS.inkMute, fontWeight: 500 }}>
+                        {' '}/ 100
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </Link>
+            );
+          })}
+        </div>
+      )}
+
+      <GenerateReportModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onSuccess={(reportId) => {
+          setModalOpen(false);
+          navigate(`/app/reports/${reportId}`);
+        }}
+      />
     </div>
   );
 }

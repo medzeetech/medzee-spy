@@ -1,0 +1,18 @@
+{
+  "name": "medzee-spy",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Diagnóstico comercial automatizado via WhatsApp para clínicas. Monorepo backend (FastAPI) + frontend (Vite/React).",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "cd backend && uvicorn app.main:app --reload --port 8000",
+    "dev:frontend": "cd frontend && npm run dev",
+    "install:all": "cd frontend && npm install && cd ../backend && pip install -r requirements.txt",
+    "test:backend": "cd backend && pytest",
+    "lint:frontend": "cd frontend && npm run lint",
+    "build:frontend": "cd frontend && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

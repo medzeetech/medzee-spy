@@ -26,3 +26,14 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Node (raiz + frontend)
+node_modules/
+
+# Vite build artifacts
+frontend/dist/
+frontend/.vite/
+
+# Logs
+*.log
+npm-debug.log*

@@ -1,6 +1,10 @@
-import { useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { useEffect } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { AlertTriangle, ArrowLeft, Clock, Info, RefreshCw, WifiOff } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
+import { useReportPolling } from '../../lib/reports.js';
+import { useMe } from '../../lib/me.js';
+import ReportGeneratingState from './ReportGeneratingState.jsx';
 import ReportTopbar from '../../components/report/ReportTopbar.jsx';
 import HeroCard from '../../components/report/HeroCard.jsx';
 import Banner from '../../components/report/Banner.jsx';
@@ -11,47 +15,318 @@ import OpportunitiesSection from '../../components/report/OpportunitiesSection.j
 import BenchmarkSection from '../../components/report/BenchmarkSection.jsx';
 import FinalCTA from '../../components/report/FinalCTA.jsx';
 
-export default function ReportDetailPage() {
-  const navigate = useNavigate();
+function BackButton({ onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center transition-all"
+      style={{
+        gap: 6,
+        padding: '8px 14px',
+        borderRadius: 10,
+        border: `1px solid ${COLORS.hairline}`,
+        background: COLORS.paper,
+        color: COLORS.ink,
+        fontSize: 13,
+        fontWeight: 600,
+        cursor: 'pointer',
+        fontFamily: "'Red Hat Display', sans-serif",
+        marginBottom: 24,
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.sunken; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = COLORS.paper; }}
+    >
+      <ArrowLeft size={14} />
+      Voltar aos relatórios
+    </button>
+  );
+}
+
+function PartialBanner() {
+  return (
+    <div
+      className="flex items-start"
+      style={{
+        gap: 10,
+        padding: '12px 16px',
+        borderRadius: 12,
+        border: `1px solid ${COLORS.hairline}`,
+        background: 'rgba(232,179,60,0.1)',
+        color: COLORS.ink,
+        fontSize: 13,
+        lineHeight: 1.5,
+        marginBottom: 20,
+      }}
+    >
+      <WifiOff size={16} style={{ color: COLORS.gold, flexShrink: 0, marginTop: 2 }} />
+      <span>
+        <em>análise baseada em parte das conversas (problema temporário de conexão com o WhatsApp)</em>
+      </span>
+    </div>
+  );
+}
+
+function ScopeWarningBanner({ text }) {
+  return (
+    <div
+      className="flex items-start"
+      style={{
+        gap: 10,
+        padding: '14px 16px',
+        borderRadius: 12,
+        border: '1px solid rgba(232,179,60,0.45)',
+        background: 'rgba(232,179,60,0.12)',
+        color: COLORS.ink,
+        fontSize: 13.5,
+        lineHeight: 1.5,
+        marginBottom: 20,
+      }}
+    >
+      <Info size={16} style={{ color: COLORS.gold, flexShrink: 0, marginTop: 2 }} />
+      <span>{text}</span>
+    </div>
+  );
+}
+
+function NoReportYetCard() {
+  // M2: empty state honesto quando o user chega em /app/reports/latest
+  // antes da extensão rodar a primeira análise. Substitui o progress fake
+  // que mostrava "Conectando ao WhatsApp… 26%" sem nada acontecer.
+  return (
+    <div
+      style={{
+        padding: 48,
+        textAlign: 'center',
+        maxWidth: 560,
+        margin: '0 auto',
+      }}
+    >
+      <div
+        style={{
+          width: 64,
+          height: 64,
+          borderRadius: 16,
+          background: 'rgba(255,107,53,0.1)',
+          color: COLORS.orange,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginBottom: 16,
+        }}
+      >
+        <Clock size={32} />
+      </div>
+      <h1
+        style={{
+          fontSize: 22,
+          fontWeight: 800,
+          color: COLORS.ink,
+          marginBottom: 12,
+          letterSpacing: '-0.02em',
+        }}
+      >
+        Aguardando primeira análise
+      </h1>
+      <p
+        style={{
+          fontSize: 14,
+          color: COLORS.inkSoft,
+          lineHeight: 1.6,
+          marginBottom: 24,
+        }}
+      >
+        Sua conta está pronta, mas ainda não temos dados pra analisar.
+      </p>
+      <div
+        style={{
+          textAlign: 'left',
+          background: 'rgba(255,107,53,0.06)',
+          border: '1px solid rgba(255,107,53,0.2)',
+          borderRadius: 12,
+          padding: 20,
+          marginBottom: 24,
+        }}
+      >
+        <strong style={{ color: COLORS.ink }}>Próximos passos:</strong>
+        <ol style={{ marginTop: 12, paddingLeft: 24, lineHeight: 1.8, color: COLORS.ink }}>
+          <li>Clique no ícone <strong>Medzee Spy</strong> na barra do Chrome</li>
+          <li>No popup, click em <strong>"Abrir WhatsApp Web"</strong></li>
+          <li>Faça login no WhatsApp Web (escaneie o QR no celular se necessário)</li>
+          <li>Volte no popup e click <strong>"Iniciar análise"</strong></li>
+          <li>Aguarde ~60-90s. Esta página atualiza automaticamente.</li>
+        </ol>
+      </div>
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        style={{
+          padding: '10px 20px',
+          background: COLORS.orange,
+          color: COLORS.cream,
+          border: 'none',
+          borderRadius: 10,
+          fontSize: 14,
+          fontWeight: 600,
+          cursor: 'pointer',
+          fontFamily: "'Red Hat Display', sans-serif",
+        }}
+      >
+        Atualizar página
+      </button>
+    </div>
+  );
+}
+
+function FailedCard({ errorCode }) {
+  return (
+    <div
+      style={{
+        background: COLORS.paper,
+        border: `1px solid ${COLORS.hairline}`,
+        borderRadius: 20,
+        padding: 'clamp(28px, 4vw, 40px)',
+        textAlign: 'center',
+        maxWidth: 520,
+        margin: '40px auto',
+      }}
+    >
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: 14,
+          background: 'rgba(92,29,46,0.1)',
+          color: COLORS.wine,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginBottom: 20,
+        }}
+      >
+        <AlertTriangle size={26} />
+      </div>
+      <h2
+        style={{
+          fontSize: 22,
+          fontWeight: 800,
+          color: COLORS.ink,
+          margin: 0,
+          marginBottom: 12,
+          letterSpacing: '-0.02em',
+          lineHeight: 1.25,
+        }}
+      >
+        Não conseguimos gerar essa análise.
+      </h2>
+      <p
+        style={{
+          fontSize: 14,
+          color: COLORS.inkSoft,
+          lineHeight: 1.55,
+          margin: 0,
+          marginBottom: 24,
+        }}
+      >
+        O processo falhou (código: {errorCode ?? 'desconhecido'}). Tente reconectar o WhatsApp.
+      </p>
+      <Link
+        to="/spy"
+        className="inline-flex items-center justify-center transition-all"
+        style={{
+          gap: 8,
+          padding: '12px 22px',
+          borderRadius: 12,
+          border: 'none',
+          background: `linear-gradient(135deg, ${COLORS.orange}, ${COLORS.orangeDeep})`,
+          color: COLORS.cream,
+          fontSize: 14,
+          fontWeight: 700,
+          cursor: 'pointer',
+          fontFamily: "'Red Hat Display', sans-serif",
+          textDecoration: 'none',
+          boxShadow: '0 6px 20px -6px rgba(255,107,53,0.4)',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.transform = 'translateY(-1px)';
+          e.currentTarget.style.boxShadow = '0 10px 28px -6px rgba(255,107,53,0.55)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.transform = 'translateY(0)';
+          e.currentTarget.style.boxShadow = '0 6px 20px -6px rgba(255,107,53,0.4)';
+        }}
+      >
+        <RefreshCw size={15} />
+        Tentar de novo
+      </Link>
+    </div>
+  );
+}
+
+function ReportContent({ partial, payload, createdAt, ownerName }) {
+  const p = payload ?? {};
+
+  // Métricas derivadas — cruzam o payload pra alimentar o HeroCard sem
+  // mais hardcoded "4h 22min / 12,4% / 47 oportunidades".
+  const opportunityCount = (p.opportunities || []).length;
+  const conversionPct =
+    p.funnel && p.funnel.length >= 5 ? p.funnel[p.funnel.length - 1]?.pct ?? null : null;
+  const avgResponseHours = (() => {
+    const buckets = p.response_time_distribution || [];
+    const midpoints = [5 / 60 / 2, (5 + 30) / 60 / 2, (30 / 60 + 1) / 2, (1 + 4) / 2, (4 + 24) / 2, 36];
+    const total = buckets.reduce((s, b) => s + (b.count || 0), 0);
+    if (total === 0) return null;
+    const weighted = buckets.reduce((s, b, i) => s + (b.count || 0) * midpoints[i], 0);
+    return Math.round((weighted / total) * 10) / 10;
+  })();
 
   const animatedChildren = [
-    <ReportTopbar key="topbar" />,
-    <HeroCard key="hero" />,
-    <FunnelSection key="funnel" />,
+    <ReportTopbar
+      key="topbar"
+      ownerName={ownerName}
+      clinicSegment={p.clinic_segment}
+      messageCount={p.message_count}
+      conversationCount={p.conversation_count}
+      createdAt={createdAt}
+    />,
+    <HeroCard
+      key="hero"
+      score={p.score}
+      messageCount={p.message_count}
+      diagnosticSummary={p.diagnostic_summary}
+      dataQuality={p.data_quality}
+      opportunityCount={opportunityCount}
+      avgResponseHours={avgResponseHours}
+      conversionPct={conversionPct}
+    />,
+    <FunnelSection key="funnel" funnel={p.funnel} />,
     <Banner key="banner" />,
-    <ResponseTimeSection key="response" />,
-    <VoiceSection key="voice" />,
-    <OpportunitiesSection key="opps" />,
-    <BenchmarkSection key="bench" />,
+    <ResponseTimeSection
+      key="response"
+      heatmapDays={p.heatmap_days}
+      heatmapPeriods={p.heatmap_periods}
+      responseTimeDistribution={p.response_time_distribution}
+    />,
+    <VoiceSection
+      key="voice"
+      objections={p.objections}
+      faqs={p.faqs}
+      sentiment={p.sentiment}
+      messageCount={p.message_count}
+    />,
+    <OpportunitiesSection key="opps" opportunities={p.opportunities} />,
+    <BenchmarkSection
+      key="bench"
+      benchmarks={p.benchmarks}
+      clinicSegment={p.clinic_segment}
+    />,
     <FinalCTA key="cta" />,
   ];
 
   return (
-    <div>
-      <button
-        type="button"
-        onClick={() => navigate('/app/reports')}
-        className="inline-flex items-center transition-all"
-        style={{
-          gap: 6,
-          padding: '8px 14px',
-          borderRadius: 10,
-          border: `1px solid ${COLORS.hairline}`,
-          background: COLORS.paper,
-          color: COLORS.ink,
-          fontSize: 13,
-          fontWeight: 600,
-          cursor: 'pointer',
-          fontFamily: "'Red Hat Display', sans-serif",
-          marginBottom: 24,
-        }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.sunken; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = COLORS.paper; }}
-      >
-        <ArrowLeft size={14} />
-        Voltar aos relatórios
-      </button>
-
+    <>
+      {p.scope_warning && <ScopeWarningBanner text={p.scope_warning} />}
+      {partial && <PartialBanner />}
       {animatedChildren.map((child, i) => (
         <div
           key={child.key}
@@ -61,7 +336,6 @@ export default function ReportDetailPage() {
           {child}
         </div>
       ))}
-
       <div
         style={{
           fontSize: 11,
@@ -72,6 +346,79 @@ export default function ReportDetailPage() {
       >
         Relatório gerado por Medzee Spy · Dados anonimizados · Sem armazenamento de conteúdo após análise
       </div>
+    </>
+  );
+}
+
+export default function ReportDetailPage() {
+  const navigate = useNavigate();
+  const { id } = useParams();
+  const pollingKey = id === 'latest' ? 'latest' : id;
+  const state = useReportPolling(pollingKey);
+  const { me } = useMe();
+  // Nome a exibir: prefere users_profile.name; senão usa o local-part do email.
+  const ownerName =
+    me?.name?.trim() ||
+    (me?.email ? me.email.split('@')[0] : null);
+
+  // Sessão expirou em background — manda pra /login preservando o redirect.
+  useEffect(() => {
+    if (state.status === 'unauthorized') {
+      const next = encodeURIComponent(
+        typeof window !== 'undefined' ? window.location.pathname : '/app/reports/latest',
+      );
+      navigate(`/login?next=${next}`, { replace: true });
+    }
+  }, [state.status, navigate]);
+
+  if (state.status === 'unauthorized') {
+    // Render mínimo enquanto o useEffect dispara o redirect.
+    return null;
+  }
+
+  if (state.status === 'not_found') {
+    return (
+      <div>
+        <BackButton onClick={() => navigate('/app/reports')} />
+        <NoReportYetCard />
+      </div>
+    );
+  }
+
+  if (state.status === 'pending' || state.status === 'generating') {
+    return <ReportGeneratingState elapsedMs={state.elapsedMs} />;
+  }
+
+  if (state.status === 'failed') {
+    // Caso especial: 404 que estourou MAX_404_MS vira failed com
+    // error='report_not_created'. UX igual ao not_found inicial — não
+    // existe relatório, oferecemos os mesmos próximos passos.
+    if (state.error === 'report_not_created') {
+      return (
+        <div>
+          <BackButton onClick={() => navigate('/app/reports')} />
+          <NoReportYetCard />
+        </div>
+      );
+    }
+    return (
+      <div>
+        <BackButton onClick={() => navigate('/app/reports')} />
+        <FailedCard errorCode={state.error} />
+      </div>
+    );
+  }
+
+  // completed | partial
+  return (
+    <div>
+      <BackButton onClick={() => navigate('/app/reports')} />
+      <ReportContent
+        partial={state.status === 'partial'}
+        payload={state.payload}
+        createdAt={state.createdAt}
+        ownerName={ownerName}
+      />
     </div>
   );
 }

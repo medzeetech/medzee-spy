@@ -1,219 +1,132 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  Wifi,
-  MessageCircle,
-  Activity,
-  BarChart2,
-  AlertCircle,
-  Target,
-  Sparkles,
-  Check,
-} from 'lucide-react';
-import { COLORS } from '../constants/colors.js';
-import { GEN_STEPS } from '../data/reportData.js';
-import Logo from '../components/Logo.jsx';
-import analiseAudio from '../assets/audio-analise.mp3';
+// GeneratingScreen — tela "gerando relatório" durante o pipeline assíncrono.
+//
+// Após o PIVOT 2026-05-24 a extensão é desacoplada e não posta eventos no
+// frontend; essa tela vive aqui pra suportar o flow legacy SpyFlow.jsx
+// (QR → Generating → Lead) e qualquer caller que queira mostrar progresso
+// enquanto `useReportPolling` aguarda o worker F3 finalizar.
+//
+// UI em duas fases derivadas do report.status:
+//   - 'collecting' / inicial: spinner "Lendo seu WhatsApp…"
+//   - 'analyzing' (report.status === 'generating' | 'completed'): "IA analisando…"
 
-const ICONS = { Wifi, MessageCircle, Activity, BarChart2, AlertCircle, Target, Sparkles };
+import { useEffect } from 'react';
+import { Loader2, MessageSquare, Sparkles } from 'lucide-react';
 
-export default function GeneratingScreen({ onComplete }) {
-  const [active, setActive] = useState(0);
-  const [done, setDone] = useState([]);
-  const audioRef = useRef(null);
+import { useReportPolling } from '../lib/reports';
 
-  // Garante que o play seja invocado mesmo se autoPlay for bloqueado em algum browser
+/**
+ * Tela "gerando relatório" — pola report status até completar.
+ *
+ * Props:
+ *   - onDone?: (reportId) => void     callback preferido.
+ *   - onComplete?: () => void          callback legacy.
+ */
+export default function GeneratingScreen({ onDone, onComplete }) {
+  // Polling do report. useReportPolling já lida com 401/refresh, 404 transient,
+  // timeout, visibility — não duplicamos isso aqui.
+  const report = useReportPolling('latest');
+
+  // Stage derivado puramente do report status.
+  const stage =
+    report?.status === 'generating' || report?.status === 'completed'
+      ? 'analyzing'
+      : 'collecting';
+
+  // Estado de erro derivado direto do report.status — sem useState/useEffect
+  // (lint react-hooks/set-state-in-effect).
+  const errorMessage =
+    report?.status === 'failed'
+      ? 'Não consegui gerar seu relatório. Tente de novo em alguns minutos.'
+      : null;
+
+  // --- dispara onDone/onComplete quando o report completa -----------------
   useEffect(() => {
-    const el = audioRef.current;
-    if (!el) return;
-    const tryPlay = el.play();
-    if (tryPlay && typeof tryPlay.catch === 'function') {
-      tryPlay.catch((e) => {
-        if (e?.name !== 'AbortError') {
-          console.warn('[Análise] Não foi possível reproduzir o áudio:', e);
-        }
-      });
+    if (report?.status !== 'completed') return;
+    if (onDone) {
+      onDone(report.reportId);
+    } else if (onComplete) {
+      onComplete();
     }
-  }, []);
+  }, [report?.status, report?.reportId, onDone, onComplete]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const timeouts = [];
+  // --- error UI inline ----------------------------------------------------
+  if (errorMessage) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-900 text-slate-100 p-6">
+        <div className="w-full max-w-md bg-slate-800 rounded-2xl p-8 shadow-2xl text-center flex flex-col gap-4">
+          <h1 className="text-xl font-semibold">Algo deu errado</h1>
+          <p className="text-sm text-slate-400">{errorMessage}</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-900 rounded-lg font-semibold transition-colors"
+          >
+            Tentar de novo
+          </button>
+        </div>
+      </div>
+    );
+  }
 
-    const run = (index) => {
-      if (cancelled) return;
-      if (index >= GEN_STEPS.length) {
-        const t = setTimeout(() => {
-          if (!cancelled) onComplete();
-        }, 500);
-        timeouts.push(t);
-        return;
-      }
-      setActive(index);
-      const t = setTimeout(() => {
-        if (cancelled) return;
-        setDone((prev) => [...prev, index]);
-        run(index + 1);
-      }, GEN_STEPS[index].duration);
-      timeouts.push(t);
-    };
-
-    run(0);
-
-    return () => {
-      cancelled = true;
-      timeouts.forEach(clearTimeout);
-    };
-  }, [onComplete]);
-
-  const total = GEN_STEPS.length;
-  const allDone = done.length === total;
-  const fraction = (done.length + (active < total && !allDone ? 0.5 : allDone ? 0 : 0)) / total;
-  const pct = Math.round(fraction * 100);
-
+  // --- main UI ------------------------------------------------------------
   return (
-    <div
-      className="flex flex-col items-center justify-center px-5"
-      style={{
-        minHeight: '100vh',
-        background: COLORS.ink,
-        color: COLORS.cream,
-      }}
-    >
-      <audio ref={audioRef} src={analiseAudio} autoPlay preload="auto" />
+    <div className="min-h-screen flex items-center justify-center bg-slate-900 text-slate-100 p-6">
+      <div className="w-full max-w-md bg-slate-800 rounded-2xl p-8 shadow-2xl flex flex-col gap-6">
+        <header className="text-center space-y-2">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {stage === 'collecting' ? 'Lendo seu WhatsApp…' : 'IA analisando…'}
+          </h1>
+          <p className="text-sm text-slate-400">
+            {stage === 'collecting'
+              ? 'Coletando os últimos 30 dias de conversas direto do seu navegador.'
+              : 'Gerando seu diagnóstico comercial.'}
+          </p>
+        </header>
 
-      <div style={{ width: '100%', maxWidth: 440, margin: '0 auto' }}>
-        <div className="flex justify-center" style={{ marginBottom: 52 }}>
-          <Logo size="md" tone="dark" />
-        </div>
-
-        {/* Contador percentual */}
-        <div style={{ textAlign: 'center', marginBottom: 36 }}>
-          <div
-            style={{
-              fontSize: 56,
-              fontWeight: 800,
-              color: COLORS.cream,
-              letterSpacing: '-0.04em',
-              lineHeight: 1,
-            }}
-          >
-            {pct}
-            <span style={{ fontSize: 28, color: COLORS.orange, marginLeft: 2 }}>%</span>
-          </div>
-          <div
-            style={{
-              fontSize: 13,
-              color: 'rgba(250,246,240,0.5)',
-              letterSpacing: '0.04em',
-              textTransform: 'uppercase',
-              marginTop: 6,
-            }}
-          >
-            Análise em andamento
-          </div>
-        </div>
-
-        {/* Barra de progresso */}
-        <div
-          style={{
-            height: 4,
-            background: 'rgba(255,255,255,0.07)',
-            borderRadius: 99,
-            overflow: 'hidden',
-            marginBottom: 36,
-          }}
-        >
-          <div
-            style={{
-              height: '100%',
-              width: `${pct}%`,
-              transition: 'width 0.6s ease',
-              background: `linear-gradient(90deg, ${COLORS.orangeDeep}, ${COLORS.orange})`,
-              boxShadow: '0 0 12px rgba(255,107,53,0.6)',
-            }}
+        <div className="space-y-3">
+          <ProgressRow
+            icon={<MessageSquare className="w-5 h-5" />}
+            label="Coletando do WhatsApp"
+            value={stage === 'collecting' ? 'iniciando…' : 'concluído'}
+            done={stage !== 'collecting'}
+            spinning={stage === 'collecting'}
+          />
+          <ProgressRow
+            icon={<Sparkles className="w-5 h-5" />}
+            label="IA analisando"
+            value={
+              stage === 'analyzing'
+                ? report?.status === 'generating'
+                  ? 'Claude processando seu funil…'
+                  : report?.status === 'completed'
+                    ? 'Pronto!'
+                    : 'Iniciando…'
+                : 'aguardando coleta…'
+            }
+            done={report?.status === 'completed'}
+            spinning={stage === 'analyzing' && report?.status !== 'completed'}
           />
         </div>
 
-        {/* Lista de passos */}
-        <div className="flex flex-col" style={{ gap: 10 }}>
-          {GEN_STEPS.map((step, i) => {
-            const isDone = done.includes(i);
-            const isActive = !isDone && i === active;
-            const Icon = ICONS[step.icon];
-
-            let opacity = 0.28;
-            let textColor = 'rgba(250,246,240,0.4)';
-            let fontWeight = 400;
-            let iconBg = 'rgba(255,255,255,0.05)';
-            let iconBorder = 'rgba(255,255,255,0.08)';
-            let iconColor = 'rgba(250,246,240,0.4)';
-            let translate = 0;
-
-            if (isActive) {
-              opacity = 1;
-              textColor = COLORS.cream;
-              fontWeight = 500;
-              iconBg = 'rgba(255,107,53,0.2)';
-              iconBorder = 'rgba(255,107,53,0.4)';
-              iconColor = COLORS.orange;
-              translate = 4;
-            } else if (isDone) {
-              opacity = 0.9;
-              textColor = 'rgba(250,246,240,0.9)';
-              fontWeight = 500;
-              iconBg = 'rgba(37,211,102,0.2)';
-              iconBorder = 'rgba(37,211,102,0.4)';
-              iconColor = COLORS.wa;
-            }
-
-            return (
-              <div
-                key={i}
-                className="flex items-center"
-                style={{
-                  gap: 14,
-                  opacity,
-                  transform: `translateX(${translate}px)`,
-                  transition: 'all 0.4s ease',
-                }}
-              >
-                <div
-                  style={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 9,
-                    background: iconBg,
-                    border: `1px solid ${iconBorder}`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexShrink: 0,
-                    transition: 'all 0.4s ease',
-                  }}
-                >
-                  {isDone ? (
-                    <Check size={16} color={iconColor} strokeWidth={2.5} />
-                  ) : (
-                    <span className={isActive ? 'anim-spin' : ''} style={{ display: 'flex' }}>
-                      <Icon size={16} color={iconColor} strokeWidth={2.2} />
-                    </span>
-                  )}
-                </div>
-                <div
-                  style={{
-                    fontSize: 13.5,
-                    color: textColor,
-                    fontWeight,
-                    transition: 'all 0.4s ease',
-                  }}
-                >
-                  {step.label}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <p className="text-xs text-slate-500 text-center pt-2 border-t border-slate-700">
+          Pode demorar até 90 segundos. Não feche esta aba.
+        </p>
       </div>
+    </div>
+  );
+}
+
+function ProgressRow({ icon, label, value, done, spinning }) {
+  return (
+    <div className="flex items-center gap-3 bg-slate-900 rounded-lg p-3">
+      <div className={done ? 'text-emerald-400' : 'text-amber-400'}>
+        {spinning && !done ? <Loader2 className="w-5 h-5 animate-spin" /> : icon}
+      </div>
+      <div className="flex-1">
+        <p className="text-sm font-medium">{label}</p>
+        <p className="text-xs text-slate-400">{value}</p>
+      </div>
+      {done && <span className="text-xs text-emerald-400">✓</span>}
     </div>
   );
 }

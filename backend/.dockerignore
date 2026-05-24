@@ -1,0 +1,24 @@
+# Mirrors .gitignore-relevant excludes for nixpacks/docker builds.
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local env — Railway uses its own dashboard vars.
+.env
+.env.local
+
+# Tests don't need to ship to prod.
+app/tests/
+pytest.ini
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

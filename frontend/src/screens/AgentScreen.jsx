@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ConversationProvider, useConversation } from '@elevenlabs/react';
 import { Phone, PhoneOff, Mic, MicOff, Loader2, RefreshCw } from 'lucide-react';
 import { COLORS } from '../constants/colors.js';
@@ -316,8 +317,45 @@ function AgentScreenInner({ onShowQR }) {
         justifyContent: 'space-between',
         padding: '24px 20px 32px',
         fontFamily: "'Red Hat Display', sans-serif",
+        position: 'relative',
       }}
     >
+      {/* LOGIN — canto superior direito */}
+      <Link
+        to="/login"
+        aria-label="Login"
+        className="inline-flex items-center transition-all"
+        style={{
+          position: 'absolute',
+          top: 24,
+          right: 20,
+          gap: 8,
+          padding: '8px 16px',
+          borderRadius: 999,
+          background: 'rgba(250,246,240,0.05)',
+          border: '1px solid rgba(250,246,240,0.15)',
+          color: 'rgba(250,246,240,0.85)',
+          fontSize: 13,
+          fontWeight: 600,
+          letterSpacing: '0.02em',
+          textDecoration: 'none',
+          fontFamily: "'Red Hat Display', sans-serif",
+          zIndex: 10,
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'rgba(255,107,53,0.12)';
+          e.currentTarget.style.borderColor = 'rgba(255,107,53,0.4)';
+          e.currentTarget.style.color = COLORS.orange;
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'rgba(250,246,240,0.05)';
+          e.currentTarget.style.borderColor = 'rgba(250,246,240,0.15)';
+          e.currentTarget.style.color = 'rgba(250,246,240,0.85)';
+        }}
+      >
+        Login
+      </Link>
+
       {/* HEADER */}
       <div className="flex flex-col items-center" style={{ gap: 14 }}>
         <Logo size="md" tone="dark" />
