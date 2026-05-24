@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Medzee Spy",
+  "version": "1.0.0",
+  "description": "Análise comercial do WhatsApp para clínicas e profissionais da saúde.",
+  "permissions": ["storage", "tabs", "scripting", "activeTab"],
+  "host_permissions": [
+    "https://web.whatsapp.com/*",
+    "https://*.medzee.com/*",
+    "http://localhost:5173/*",
+    "http://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "src/service-worker.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.medzee.com/*", "http://localhost:5173/*"],
+      "js": ["src/content-scripts/probe.ts"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["src/content-scripts/collector.ts"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["wa-collector.js"],
+      "matches": ["https://web.whatsapp.com/*"]
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "public/icons/icon-16.png",
+      "48": "public/icons/icon-48.png",
+      "128": "public/icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "public/icons/icon-16.png",
+    "48": "public/icons/icon-48.png",
+    "128": "public/icons/icon-128.png"
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+public/icons/
+public/wa-collector.js
+public/wa-collector.js.map
+.DS_Store
+*.log
+.vite/
