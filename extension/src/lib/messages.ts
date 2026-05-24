@@ -1,12 +1,16 @@
 /**
  * Shared wire types between the Medzee Spy backend, the Chrome extension,
- * and the frontend (F8 / design §4.2 + §4.10).
+ * and the frontend (F8 / design §4.2 + §4.10, post-pivot 2026-05-24).
  *
  * Source of truth for the network shapes is
  * `backend/app/modules/extension/schemas.py`. Keep this file in sync
  * manually — there's no codegen pipeline yet. The matching Pydantic
  * models there use `extra='forbid'` so any drift surfaces as HTTP 422
  * during smoke (T25).
+ *
+ * Post-pivot: the extension no longer talks to `/api/extension/pair`.
+ * Auth is `/api/auth/login` and the extension stores the Supabase
+ * session itself.
  */
 
 // ─── HTTP wire types (mirror of backend Pydantic models) ───────────────
@@ -47,16 +51,18 @@ export interface ExtensionMessageBatch {
   messages: ExtensionMessage[];
 }
 
-export interface ExtensionPairRequest {
-  pairing_token: string;
-  extension_install_id: string;
-  extension_version?: string;
-  user_agent?: string;
-}
-
-export interface ExtensionPairResponse {
-  refresh_token: string;
-  user_id: string;
+/** Response shape of `POST /api/auth/login` (envelope already unwrapped). */
+export interface LoginResponse {
+  user: {
+    id: string;
+    email: string;
+  };
+  session: {
+    access_token: string;
+    refresh_token: string;
+    /** Seconds until the access_token expires. Convert at storage time. */
+    expires_in: number;
+  };
 }
 
 export interface ExtensionStatusResponse {
@@ -87,30 +93,34 @@ export interface ExtensionTelemetryEventPayload {
 // ─── Runtime messaging between extension contexts ──────────────────────
 //
 // `MedzeeRuntimeMessage` flows over `chrome.runtime.sendMessage` between
-// content scripts ↔ service worker. `WindowMedzeeMessage` flows over
-// `window.postMessage` between the frontend page and the content scripts.
+// content scripts ↔ service worker ↔ popup. `WindowMedzeeMessage` flows
+// over `window.postMessage` between the frontend page and the content
+// scripts.
 
 export type MedzeeRuntimeMessage =
   | { type: "medzee:get_state" }
-  | { type: "medzee:pair"; payload: { pairing_token: string } }
+  | { type: "medzee:login"; payload: { email: string; password: string } }
+  | { type: "medzee:logout" }
   | { type: "medzee:start" }
   | { type: "medzee:abort" }
   | { type: "medzee:batch"; payload: ExtensionMessageBatch }
-  | { type: "medzee:telemetry"; payload: ExtensionTelemetryEventPayload }
-  | { type: "medzee:unpair" };
+  | { type: "medzee:telemetry"; payload: ExtensionTelemetryEventPayload };
 
 export type MedzeeRuntimeReply =
-  | { type: "medzee:state"; paired: boolean; version: string }
+  | {
+      type: "medzee:state";
+      logged_in: boolean;
+      email: string | null;
+      version: string;
+    }
   | { type: "medzee:ok" }
   | { type: "medzee:error"; code: string; message?: string };
 
 export type WindowMedzeeMessage =
   | { type: "medzee:probe" }
-  | { type: "medzee:cmd"; cmd: string; payload?: unknown }
-  | { type: "medzee:installed"; paired: boolean; version: string }
+  | { type: "medzee:installed"; version: string }
   | {
       type: "medzee:event";
       event: TelemetryEvent | "batch_sent" | "aborted";
       data?: Record<string, unknown>;
-    }
-  | { type: "medzee:cmd_result"; cmd: string; result: unknown };
+    };

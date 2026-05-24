@@ -83,8 +83,11 @@ async def test_signup_happy_path(
     valid_signup_request,
 ) -> None:
     """Wires create_user → app_metadata merge → profile insert → sign-in.
-    Returns SignupResponse populated from the sign-in payload plus the F8
-    extension pairing token."""
+    Returns SignupResponse populated from the sign-in payload.
+
+    PIVOT (2026-05-24): the legacy ``extension_pairing_token`` field is
+    gone — the extension now logs in via Supabase email+password.
+    """
     req = valid_signup_request()
 
     svc = AuthService(supabase=fake_supabase_admin)
@@ -124,13 +127,9 @@ async def test_signup_happy_path(
     # response envelope.
     assert resp.user.id == TEST_USER_ID
     assert resp.session.access_token == "access_tok_test"
-
-    # F8 / CHX-01: signup emits a short-lived extension pairing JWT and
-    # the helper resolves the same user_id we just provisioned.
-    assert resp.extension_pairing_token, "expected non-empty pairing token"
-    from app.modules.extension.security import decode_pairing_token
-
-    assert decode_pairing_token(resp.extension_pairing_token) == TEST_USER_ID
+    # PIVOT (2026-05-24): SignupResponse no longer carries an
+    # extension_pairing_token field.
+    assert not hasattr(resp, "extension_pairing_token")
 
 
 async def test_signup_normalizes_email(

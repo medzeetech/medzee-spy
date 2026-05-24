@@ -16,8 +16,13 @@ Patching strategy mirrors ``backend/app/tests/auth/test_auth_service.py``:
   a test wants to assert ``trigger_generate`` was scheduled — otherwise
   pytest emits ``"Task was destroyed but it is pending"`` warnings as
   the loop tears down.
-* ``settings.SUPABASE_JWT_SECRET`` is configured via the autouse fixture
-  so ``pair_extension`` can decode tokens minted by ``issue_pairing_token``.
+
+PIVOT (2026-05-24): ``pair_extension`` and the install-registry tests
+are gone — the extension now authenticates via Supabase login, so the
+``extension_installs`` table and the custom JWT pairing dance no longer
+exist. ``get_status`` is exercised against the new contract: ``paired``
+is derived from collection history (``stats_for_user``), not from an
+install row lookup.
 """
 from __future__ import annotations
 
@@ -25,7 +30,7 @@ import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -35,22 +40,9 @@ from app.modules.extension import service as ext_service
 from app.modules.extension.schemas import (
     ExtensionMessage,
     ExtensionMessageBatch,
-    ExtensionPairRequest,
     ExtensionTelemetryEvent,
     MobileRedirectLeadCreate,
 )
-from app.modules.extension.security import (
-    issue_pairing_token,
-    issue_refresh_token,
-)
-
-TEST_SECRET = "test-jwt-secret-svc-extension-0123456789"
-
-
-@pytest.fixture(autouse=True)
-def _configure_jwt_secret(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test needs a valid JWT secret to mint/decode pairing tokens."""
-    monkeypatch.setattr(settings, "SUPABASE_JWT_SECRET", TEST_SECRET)
 
 
 @pytest.fixture(autouse=True)
@@ -100,23 +92,20 @@ def _make_batch(
 
 
 def _patch_repository(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """Replace every extension repository function with an AsyncMock."""
+    """Replace every extension repository function with an AsyncMock.
+
+    PIVOT (2026-05-24): the install-registry functions are gone; only
+    ``get_or_create_extension_session``, ``insert_telemetry`` and
+    ``insert_mobile_lead`` remain.
+    """
     session_id = uuid4()
     mocks = SimpleNamespace(
-        upsert_install=AsyncMock(return_value=None),
-        get_install=AsyncMock(return_value=None),
-        get_install_for_user=AsyncMock(return_value=None),
-        touch_install=AsyncMock(return_value=None),
         get_or_create_extension_session=AsyncMock(return_value=session_id),
         insert_telemetry=AsyncMock(return_value=None),
         insert_mobile_lead=AsyncMock(return_value=None),
         _session_id=session_id,
     )
     for name in (
-        "upsert_install",
-        "get_install",
-        "get_install_for_user",
-        "touch_install",
         "get_or_create_extension_session",
         "insert_telemetry",
         "insert_mobile_lead",
@@ -182,99 +171,6 @@ def _patch_report_service(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
         _sync_create_task,
     )
     return fake_service
-
-
-# ─── pair_extension ────────────────────────────────────────────────────
-
-
-async def test_pair_extension_happy_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Valid pairing token → upserts install + returns refresh token."""
-    repo = _patch_repository(monkeypatch)
-    uid = uuid4()
-    token = issue_pairing_token(uid)
-    req = ExtensionPairRequest(
-        pairing_token=token,
-        extension_install_id="install-abc",
-        extension_version="1.0.0",
-        user_agent="Mozilla/5.0",
-    )
-
-    resp = await ext_service.pair_extension(req)
-
-    assert resp.user_id == uid
-    assert isinstance(resp.refresh_token, str) and resp.refresh_token
-    # Decoding the response refresh token must yield the same uid.
-    from app.modules.extension.security import decode_refresh_token
-
-    assert decode_refresh_token(resp.refresh_token) == uid
-
-    repo.upsert_install.assert_awaited_once()
-    kwargs = repo.upsert_install.await_args.kwargs
-    assert kwargs["extension_version"] == "1.0.0"
-    assert kwargs["user_agent"] == "Mozilla/5.0"
-    # install_id + user_id are passed positionally OR by keyword depending
-    # on style; the call uses kwargs in service.py.
-    assert kwargs.get("install_id") == "install-abc" or repo.upsert_install.await_args.args[0] == "install-abc"
-
-
-async def test_pair_extension_rejects_expired_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An expired pairing token must raise 401 before any repo write."""
-    repo = _patch_repository(monkeypatch)
-    monkeypatch.setattr(settings, "EXTENSION_PAIRING_TOKEN_TTL_S", -10)
-    expired = issue_pairing_token(uuid4())
-    req = ExtensionPairRequest(
-        pairing_token=expired, extension_install_id="install-x"
-    )
-
-    with pytest.raises(HTTPException) as exc:
-        await ext_service.pair_extension(req)
-    assert exc.value.status_code == 401
-    assert exc.value.detail["code"] == "pairing_expired"  # type: ignore[index]
-    repo.upsert_install.assert_not_awaited()
-
-
-async def test_pair_extension_rejects_wrong_typ(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A refresh token must NOT pass the pairing decoder."""
-    repo = _patch_repository(monkeypatch)
-    refresh = issue_refresh_token(uuid4())
-    req = ExtensionPairRequest(
-        pairing_token=refresh, extension_install_id="install-x"
-    )
-
-    with pytest.raises(HTTPException) as exc:
-        await ext_service.pair_extension(req)
-    assert exc.value.status_code == 401
-    repo.upsert_install.assert_not_awaited()
-
-
-async def test_pair_extension_upserts_with_correct_fields(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Upsert call must carry install_id, user_id, version, UA."""
-    repo = _patch_repository(monkeypatch)
-    uid = uuid4()
-    token = issue_pairing_token(uid)
-    req = ExtensionPairRequest(
-        pairing_token=token,
-        extension_install_id="install-42",
-        extension_version="1.2.3",
-        user_agent="UA-test",
-    )
-
-    await ext_service.pair_extension(req)
-
-    repo.upsert_install.assert_awaited_once_with(
-        install_id="install-42",
-        user_id=uid,
-        extension_version="1.2.3",
-        user_agent="UA-test",
-    )
 
 
 # ─── ingest_batch ──────────────────────────────────────────────────────
@@ -476,12 +372,26 @@ async def test_capture_mobile_lead_inserts(
 # ─── get_status ────────────────────────────────────────────────────────
 
 
-async def test_get_status_unpaired(
+async def test_get_status_no_messages_returns_unpaired(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No install row → paired=False, defaults zeroed."""
-    repo = _patch_repository(monkeypatch)
-    repo.get_install_for_user.return_value = None
+    """No collected messages → paired=False, zeroed counts.
+
+    PIVOT (2026-05-24): ``paired`` is now derived from collection
+    history, not from an install-registry row.
+    """
+    _patch_repository(monkeypatch)
+    fake_stats = AsyncMock(
+        return_value={
+            "message_count": 0,
+            "conversation_count": 0,
+            "last_message_at": None,
+        }
+    )
+    monkeypatch.setattr(
+        "app.modules.captured_messages.repository.stats_for_user",
+        fake_stats,
+    )
 
     resp = await ext_service.get_status(uuid4())
 
@@ -489,19 +399,15 @@ async def test_get_status_unpaired(
     assert resp.last_collection_at is None
     assert resp.last_collection_message_count == 0
     assert resp.extension_min_version == settings.EXTENSION_MIN_VERSION
+    fake_stats.assert_awaited_once()
 
 
-async def test_get_status_paired(
+async def test_get_status_with_messages_returns_paired(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Install row present → paired=True + populated stats."""
-    repo = _patch_repository(monkeypatch)
+    """At least one extension-sourced message → paired=True + populated stats."""
+    _patch_repository(monkeypatch)
     last_seen = datetime(2026, 5, 23, 9, 0, tzinfo=timezone.utc)
-    repo.get_install_for_user.return_value = {
-        "install_id": "install-z",
-        "user_id": str(uuid4()),
-        "last_seen_at": last_seen.isoformat(),
-    }
     fake_stats = AsyncMock(
         return_value={
             "message_count": 142,
@@ -520,3 +426,24 @@ async def test_get_status_paired(
     assert resp.last_collection_message_count == 142
     assert resp.last_collection_at == last_seen
     fake_stats.assert_awaited_once()
+
+
+async def test_get_status_swallows_stats_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ``stats_for_user`` raises, ``get_status`` still returns a valid
+    (unpaired, zeroed) response rather than 500ing — the SPA polls this
+    endpoint and must degrade gracefully.
+    """
+    _patch_repository(monkeypatch)
+    fake_stats = AsyncMock(side_effect=RuntimeError("supabase down"))
+    monkeypatch.setattr(
+        "app.modules.captured_messages.repository.stats_for_user",
+        fake_stats,
+    )
+
+    resp = await ext_service.get_status(uuid4())
+
+    assert resp.paired is False
+    assert resp.last_collection_message_count == 0
+    assert resp.last_collection_at is None

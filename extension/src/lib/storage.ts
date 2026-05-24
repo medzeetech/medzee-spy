@@ -1,8 +1,11 @@
 /**
  * Typed wrapper around `chrome.storage.local` for the single
- * `medzee` key (F8 / design §4.10). Everything the extension persists
- * lives in one record so that `chrome.storage.local.get(['medzee'])` is
- * the only call we make on cold service-worker wake-ups.
+ * `medzee` key (F8 / design §4.10, post-pivot 2026-05-24).
+ *
+ * Post-pivot the extension authenticates against `/api/auth/login` and
+ * stores the Supabase session directly. There is no longer an `install_id`
+ * or standalone `refresh_token` — both are replaced by the `session`
+ * record below.
  *
  * The MV3 service worker is allowed to die at any time, so:
  *  - reads always merge against `DEFAULT_STATE` (missing keys → safe defaults);
@@ -10,13 +13,18 @@
  *    avoiding a `JSON.stringify` race when two handlers patch concurrently.
  */
 
+export interface ExtensionSession {
+  access_token: string;
+  refresh_token: string;
+  /** Unix epoch seconds. Computed at login as `now + expires_in`. */
+  expires_at: number;
+  user_id: string;
+  email: string;
+}
+
 export interface MedzeePersistedState {
-  /** Stable per-install UUID v4. Generated once on first run. */
-  install_id: string | null;
-  /** Long-lived refresh token (`typ=extension_refresh`, 30 day TTL). */
-  refresh_token: string | null;
-  /** Owning user UUID. Mirrors the JWT `sub` claim. */
-  user_id: string | null;
+  /** Supabase session obtained via `/api/auth/login`. */
+  session: ExtensionSession | null;
   /** Mirror of `manifest.json:version`. Stored once at install time. */
   extension_version: string;
   /** ISO timestamp of the last completed collection. */
@@ -32,9 +40,7 @@ export interface MedzeePersistedState {
 }
 
 export const DEFAULT_STATE: MedzeePersistedState = {
-  install_id: null,
-  refresh_token: null,
-  user_id: null,
+  session: null,
   extension_version: "0.0.0",
   last_collection_at: null,
   last_collection_message_count: 0,
@@ -60,22 +66,7 @@ export async function setState(
   return next;
 }
 
-/** Drop the entire persisted state (used on `medzee:unpair`). */
+/** Drop the entire persisted state (used on `medzee:logout`). */
 export async function clearState(): Promise<void> {
   await chrome.storage.local.remove(STORAGE_KEY);
-}
-
-/**
- * Lazily generate and persist the per-install id.
- * Safe to call from any context — multiple racing callers converge on
- * the first persisted value because the second `setState` call observes
- * the first one's write.
- */
-export async function ensureInstallId(): Promise<string> {
-  const state = await getState();
-  if (state.install_id) return state.install_id;
-  const newId = crypto.randomUUID();
-  const persisted = await setState({ install_id: newId });
-  // If a concurrent write landed first, prefer that value.
-  return persisted.install_id ?? newId;
 }

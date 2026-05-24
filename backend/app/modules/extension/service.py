@@ -1,12 +1,18 @@
 """Business logic for the Chrome extension ingestion module (F8 / §4.2).
 
-Five async public functions, one per route:
+Four async public functions, one per route:
 
-* :func:`pair_extension`   — ``POST /api/extension/pair``
 * :func:`ingest_batch`     — ``POST /api/extension/messages``
 * :func:`record_telemetry` — ``POST /api/extension/telemetry``
 * :func:`capture_mobile_lead` — ``POST /api/extension/mobile-lead``
 * :func:`get_status`       — ``GET  /api/extension/status``
+
+PIVOT (2026-05-24): :func:`pair_extension` was removed. The extension now
+authenticates via Supabase login (email+password) and uses the Supabase
+access token as ``Bearer`` for every call — same JWT validator the rest
+of the app uses (:func:`app.core.security.get_current_user_id`). The
+custom pairing/refresh token dance is gone, and so is the
+``extension_installs`` registry it depended on.
 
 Design notes worth keeping in mind:
 
@@ -42,15 +48,9 @@ from app.modules.captured_messages.schemas import CapturedMessageInsert
 from app.modules.extension import repository
 from app.modules.extension.schemas import (
     ExtensionMessageBatch,
-    ExtensionPairRequest,
-    ExtensionPairResponse,
     ExtensionStatusResponse,
     ExtensionTelemetryEvent,
     MobileRedirectLeadCreate,
-)
-from app.modules.extension.security import (
-    decode_pairing_token,
-    issue_refresh_token,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,39 +77,6 @@ def _is_outdated(client_version: str, min_version: str) -> bool:
     return _parse_version(client_version) < _parse_version(min_version)
 
 
-# ─── pair ──────────────────────────────────────────────────────────────
-
-
-async def pair_extension(req: ExtensionPairRequest) -> ExtensionPairResponse:
-    """Trade a short-lived pairing token for a long-lived refresh token.
-
-    Flow:
-        1. Decode the pairing JWT — wrong ``typ`` / expired / malformed
-           raises HTTP 401 (handled inside ``decode_pairing_token``).
-        2. UPSERT the install row so subsequent calls can attribute
-           telemetry / collections to this device.
-        3. Mint a refresh token (30d TTL by default) and return it with
-           the user id so the extension can store both atomically.
-    """
-    user_id = decode_pairing_token(req.pairing_token)
-    await repository.upsert_install(
-        install_id=req.extension_install_id,
-        user_id=user_id,
-        extension_version=req.extension_version,
-        user_agent=req.user_agent,
-    )
-    refresh_token = issue_refresh_token(user_id)
-    logger.info(
-        "svc.extension.pair.success",
-        extra={
-            "user_id": str(user_id),
-            "install_id": req.extension_install_id,
-            "extension_version": req.extension_version,
-        },
-    )
-    return ExtensionPairResponse(refresh_token=refresh_token, user_id=user_id)
-
-
 # ─── ingest_batch ──────────────────────────────────────────────────────
 
 
@@ -126,7 +93,6 @@ async def ingest_batch(user_id: UUID, batch: ExtensionMessageBatch) -> dict:
         4. On the **last** batch fire ``ReportService.trigger_generate``
            as an ``asyncio.create_task`` — the HTTP response goes out
            fast while F3 runs in the background.
-        5. Bump ``last_seen_at`` on the install row (best-effort).
     """
     if _is_outdated(batch.extension_version, settings.EXTENSION_MIN_VERSION):
         logger.info(
@@ -187,19 +153,6 @@ async def ingest_batch(user_id: UUID, batch: ExtensionMessageBatch) -> dict:
                 "batch_id": batch.batch_id,
                 "total_batches": batch.total_batches,
             },
-        )
-
-    # Best-effort install touch — if the user paired from another device
-    # we don't have the install_id here, so we skip silently when absent.
-    try:
-        install = await repository.get_install_for_user(user_id)
-        if install:
-            await repository.touch_install(install["install_id"])
-    except Exception:
-        logger.warning(
-            "svc.extension.ingest.touch_install_failed",
-            extra={"user_id": str(user_id)},
-            exc_info=True,
         )
 
     logger.info(
@@ -324,29 +277,20 @@ async def capture_mobile_lead(req: MobileRedirectLeadCreate) -> None:
 
 
 async def get_status(user_id: UUID) -> ExtensionStatusResponse:
-    """Return the pairing + last-collection state for the user.
+    """Return the collection state for the authenticated user.
 
-    If no install row exists, ``paired=False`` and the rest defaults to
-    zero. When paired, we reuse :func:`captured_messages.stats_for_user`
-    to surface ``last_collection_at`` (= last message timestamp) and
-    ``last_collection_message_count`` — that's the cheapest signal the
-    frontend needs to render "última coleta: X msgs".
+    PIVOT (2026-05-24): the extension now authenticates via Supabase
+    login, so the install-registry lookup is gone. ``paired`` is now
+    derived from collection history: ``True`` iff the user has ever
+    received at least one extension-sourced message. The frontend's
+    "Pareada" / "Não pareada" indicator therefore now reads as
+    "Coletando" / "Aguardando primeira coleta".
+
+    Best-effort: if the captured-messages stats lookup fails we still
+    return a usable response (``paired=False``, zeroed counts) rather
+    than 500ing — the status endpoint is polled by the SPA and should
+    degrade gracefully.
     """
-    install = await repository.get_install_for_user(user_id)
-    if install is None:
-        logger.info(
-            "svc.extension.status.unpaired",
-            extra={"user_id": str(user_id)},
-        )
-        return ExtensionStatusResponse(
-            paired=False,
-            last_collection_at=None,
-            last_collection_message_count=0,
-            extension_min_version=settings.EXTENSION_MIN_VERSION,
-        )
-
-    # Best-effort stats — if the helper errors we'd still rather return
-    # paired=True than 500 the status endpoint, so we swallow + log.
     last_collection_at = None
     last_collection_message_count = 0
     try:
@@ -362,16 +306,18 @@ async def get_status(user_id: UUID) -> ExtensionStatusResponse:
             exc_info=True,
         )
 
+    paired = last_collection_message_count > 0
+
     logger.info(
-        "svc.extension.status.paired",
+        "svc.extension.status.resolved",
         extra={
             "user_id": str(user_id),
-            "install_id": install.get("install_id"),
+            "paired": paired,
             "message_count": last_collection_message_count,
         },
     )
     return ExtensionStatusResponse(
-        paired=True,
+        paired=paired,
         last_collection_at=last_collection_at,
         last_collection_message_count=last_collection_message_count,
         extension_min_version=settings.EXTENSION_MIN_VERSION,
@@ -379,7 +325,6 @@ async def get_status(user_id: UUID) -> ExtensionStatusResponse:
 
 
 __all__ = [
-    "pair_extension",
     "ingest_batch",
     "record_telemetry",
     "capture_mobile_lead",

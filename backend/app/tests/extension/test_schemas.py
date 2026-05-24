@@ -9,15 +9,15 @@ Locks in the wire-shape contracts from design §4.2:
   rather than relying on one generic "extra='forbid'" smoke.
 * ``ExtensionMessageBatch`` enforces the ``batch_index >= 0`` and
   ``total_batches >= 1`` floors.
-* ``ExtensionPairRequest`` / ``ExtensionPairResponse`` round-trip JSON so
-  the HTTP layer can rely on ``model_dump_json`` ↔ ``model_validate_json``
-  symmetry.
 * ``MobileRedirectLeadCreate`` requires ``email``.
+
+PIVOT (2026-05-24): tests for ``ExtensionPairRequest`` /
+``ExtensionPairResponse`` are gone — those schemas were dropped when the
+extension switched to Supabase email+password login.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -25,8 +25,6 @@ from pydantic import ValidationError
 from app.modules.extension.schemas import (
     ExtensionMessage,
     ExtensionMessageBatch,
-    ExtensionPairRequest,
-    ExtensionPairResponse,
     ExtensionTelemetryEvent,
     MobileRedirectLeadCreate,
 )
@@ -136,30 +134,6 @@ def test_extension_message_batch_index_and_total_floors() -> None:
             extension_version="1.0.0",
             messages=[],
         )
-
-
-# ─── ExtensionPairRequest / ExtensionPairResponse ──────────────────────
-
-
-def test_extension_pair_request_roundtrips_json() -> None:
-    req = ExtensionPairRequest(
-        pairing_token="jwt.payload.sig",
-        extension_install_id="11111111-2222-3333-4444-555555555555",
-        extension_version="1.0.0",
-        user_agent="Mozilla/5.0 ...",
-    )
-    raw = req.model_dump_json()
-    rt = ExtensionPairRequest.model_validate_json(raw)
-    assert rt == req
-
-
-def test_extension_pair_response_roundtrips_json() -> None:
-    uid = uuid4()
-    resp = ExtensionPairResponse(refresh_token="jwt.refresh.sig", user_id=uid)
-    raw = resp.model_dump_json()
-    rt = ExtensionPairResponse.model_validate_json(raw)
-    assert rt.refresh_token == "jwt.refresh.sig"
-    assert rt.user_id == uid
 
 
 # ─── MobileRedirectLeadCreate ──────────────────────────────────────────

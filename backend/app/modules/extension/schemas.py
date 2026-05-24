@@ -1,16 +1,11 @@
 """Pydantic schemas for the Chrome extension ingestion module (F8 / §4.2).
 
-Wire shapes for the five extension endpoints:
+Wire shapes for the extension endpoints:
 
-* ``POST /api/extension/pair`` — :class:`ExtensionPairRequest` →
-  :class:`ExtensionPairResponse`
-* ``POST /api/extension/messages`` — :class:`ExtensionMessageBatch`
-* ``GET  /api/extension/status``   — :class:`ExtensionStatusResponse`
-* ``POST /api/extension/telemetry`` — :class:`ExtensionTelemetryEvent`
+* ``POST /api/extension/messages``    — :class:`ExtensionMessageBatch`
+* ``GET  /api/extension/status``      — :class:`ExtensionStatusResponse`
+* ``POST /api/extension/telemetry``   — :class:`ExtensionTelemetryEvent`
 * ``POST /api/extension/mobile-lead`` — :class:`MobileRedirectLeadCreate`
-
-Plus :class:`ExtensionPairingTokenResponse` used by
-``POST /api/auth/me/extension-pairing-token`` (T6).
 
 Design contracts enforced here:
 
@@ -22,12 +17,17 @@ Design contracts enforced here:
 * ``ExtensionMessageBatch.batch_index`` is ``>= 0`` and ``total_batches >= 1``;
   the ingest service uses these to detect the last batch and fire the F3
   worker.
+
+PIVOT (2026-05-24): the legacy JWT pairing dance
+(``ExtensionPairRequest``/``ExtensionPairResponse``/``ExtensionPairingTokenResponse``)
+was removed. The extension now logs in with email+password against
+Supabase directly and uses the Supabase access token as ``Bearer`` on
+every call, so no custom pairing wire shapes are needed anymore.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -85,29 +85,20 @@ class ExtensionMessageBatch(BaseModel):
     messages: list[ExtensionMessage]
 
 
-# ─── Pair / status ─────────────────────────────────────────────────────
-
-
-class ExtensionPairRequest(BaseModel):
-    """Body of ``POST /api/extension/pair``.
-
-    The ``pairing_token`` JWT is emitted by ``/api/auth/signup`` (T6) with
-    ``typ='extension_pairing'`` and a short TTL.
-    """
-
-    pairing_token: str
-    extension_install_id: str
-    extension_version: str | None = None
-    user_agent: str | None = None
-
-
-class ExtensionPairResponse(BaseModel):
-    refresh_token: str
-    user_id: UUID
+# ─── Status ────────────────────────────────────────────────────────────
 
 
 class ExtensionStatusResponse(BaseModel):
-    """Body of ``GET /api/extension/status`` — used by frontend polling."""
+    """Body of ``GET /api/extension/status`` — used by frontend polling.
+
+    PIVOT (2026-05-24): ``paired`` now means "this authenticated user has
+    ever received at least one message from an extension-sourced batch".
+    The pairing concept is no longer an install-registry lookup — the
+    extension authenticates directly via Supabase login, so being able to
+    call this endpoint already implies the user is logged in. The boolean
+    is kept so the frontend's existing "Pareada"/"Não pareada" UI stays
+    meaningful (it now reads "Coletando"/"Aguardando primeira coleta").
+    """
 
     paired: bool
     last_collection_at: datetime | None = None
@@ -138,19 +129,6 @@ class ExtensionTelemetryEvent(BaseModel):
     ua: str | None = None
 
 
-# ─── Auth token re-emission (CHX-15) ───────────────────────────────────
-
-
-class ExtensionPairingTokenResponse(BaseModel):
-    """Body of ``POST /api/auth/me/extension-pairing-token`` (T6).
-
-    Returned to the frontend when a logged-in user needs a fresh
-    short-lived pairing token to hand off to the extension.
-    """
-
-    extension_pairing_token: str
-
-
 # ─── Mobile redirect leads ─────────────────────────────────────────────
 
 
@@ -171,11 +149,8 @@ __all__ = [
     "ExtensionMessage",
     "ExtensionMessageBatch",
     "ExtensionMessageType",
-    "ExtensionPairRequest",
-    "ExtensionPairResponse",
     "ExtensionStatusResponse",
     "ExtensionTelemetryEvent",
     "ExtensionTelemetryEventName",
-    "ExtensionPairingTokenResponse",
     "MobileRedirectLeadCreate",
 ]

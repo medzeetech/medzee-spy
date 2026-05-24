@@ -66,10 +66,9 @@ class UserPayload(BaseModel):
 class SignupResponse(BaseModel):
     user: UserPayload
     session: SessionPayload
-    # F8 / CHX-01: short-lived JWT the frontend hands to the Chrome
-    # extension on first install. Always present — the extension flow is
-    # the default and emitting an unused token costs nothing.
-    extension_pairing_token: str
+    # PIVOT (2026-05-24): ``extension_pairing_token`` was removed. The
+    # extension now logs in via Supabase email+password directly, so the
+    # signup envelope no longer needs to ship a separate pairing JWT.
 
 
 class LoginResponse(BaseModel):

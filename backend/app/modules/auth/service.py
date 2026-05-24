@@ -35,7 +35,6 @@ from app.modules.auth.schemas import (
     UpdateMeRequest,
     UserPayload,
 )
-from app.modules.extension.security import issue_pairing_token
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +161,7 @@ class AuthService:
     async def signup(self, req: SignupRequest) -> SignupResponse:
         """Create an auth user + profile.
 
-        Sequence (AUTH-01..AUTH-10, post-F8):
+        Sequence (AUTH-01..AUTH-10, post-F8 pivot 2026-05-24):
             1. Normalize email.
             2. ``auth.admin.create_user(email_confirm=True)`` — bypasses the
                email confirmation flow so the user is immediately usable.
@@ -171,8 +170,13 @@ class AuthService:
                user (best-effort) and raise :class:`ProfileCreationFailed`.
             5. ``auth.sign_in_with_password`` to mint a session pair the
                frontend can stuff into ``supabase.auth.setSession``.
-            6. Emit the short-lived extension pairing token (CHX-01).
-            7. Return the envelope.
+            6. Return the envelope.
+
+        PIVOT (2026-05-24): the legacy step 6 emitted a custom
+        ``extension_pairing`` JWT for the Chrome extension. That dance is
+        gone — the extension now logs in via Supabase email+password and
+        uses the standard access token, so signup no longer needs to mint
+        a separate pairing token.
         """
         started = time.monotonic()
         email = _normalize_email(req.email)
@@ -275,28 +279,6 @@ class AuthService:
         session = _session_payload_from(getattr(sign_in_response, "session"))
         user_payload = _user_payload_from(getattr(sign_in_response, "user", auth_user))
 
-        # Step 6 — F8 / CHX-01: emit the short-lived extension pairing token.
-        # The frontend stuffs it in ``window.medzee_spy`` so the Chrome
-        # extension probe can trade it for a refresh token via
-        # ``POST /api/extension/pair``.
-        #
-        # If the deploy is misconfigured (``SUPABASE_JWT_SECRET`` empty), the
-        # mint raises ``RuntimeError``. Rollback the auth user so the
-        # frontend's retry can succeed once ops fixes the env — otherwise
-        # the email is permanently "already registered" and the operator has
-        # to manually clean up auth.users.
-        try:
-            extension_pairing_token = issue_pairing_token(user_id)
-        except Exception as exc:
-            self._safe_delete_auth_user(user_id)
-            logger.exception(
-                "service.auth.signup.pairing_token_mint_failed",
-                extra={"op": "signup", "user_id": str(user_id)},
-            )
-            raise SupabaseAuthError(
-                f"extension pairing token mint failed: {exc}"
-            ) from exc
-
         logger.info(
             "service.auth.signup.exit",
             extra={
@@ -305,11 +287,7 @@ class AuthService:
                 "elapsed_ms": int((time.monotonic() - started) * 1000),
             },
         )
-        return SignupResponse(
-            user=user_payload,
-            session=session,
-            extension_pairing_token=extension_pairing_token,
-        )
+        return SignupResponse(user=user_payload, session=session)
 
     # ── Login ─────────────────────────────────────────────────────────
 

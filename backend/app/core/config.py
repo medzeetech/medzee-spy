@@ -26,18 +26,14 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str = ""
 
     # F8: Chrome extension tuning.
-    # Pairing token TTL (curto: user precisa instalar a extensão em ~15min).
-    EXTENSION_PAIRING_TOKEN_TTL_S: int = 15 * 60
-    # Refresh token TTL (longo: extensão fica autenticada 30d).
-    EXTENSION_REFRESH_TOKEN_TTL_S: int = 30 * 24 * 60 * 60
+    # PIVOT (2026-05-24): the custom pairing/refresh JWT dance is gone —
+    # the extension now authenticates via Supabase email+password, so
+    # the EXTENSION_PAIRING_TOKEN_TTL_S / EXTENSION_REFRESH_TOKEN_TTL_S /
+    # SUPABASE_JWT_SECRET knobs were dropped along with it.
     # Versão mínima aceita da extensão (CHX-14). Floor: 1.0.0.
     EXTENSION_MIN_VERSION: str = "1.0.0"
     # Telemetry rate-limit (eventos por minuto por user, CHX-16).
     EXTENSION_TELEMETRY_RATE_PER_MINUTE: int = 60
-    # JWT secret for extension pairing/refresh tokens (HS256). Required when
-    # F8 endpoints are live. Default empty allows local dev / tests to seed it
-    # via env or monkeypatch; production deploys must set this explicitly.
-    SUPABASE_JWT_SECRET: str = ""
 
     # LLM provider — default Anthropic Claude (D2).
     LLM_PROVIDER: str = "anthropic"
