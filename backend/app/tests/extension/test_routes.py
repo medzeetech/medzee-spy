@@ -3,8 +3,8 @@
 Style mirrors ``app/tests/auth/test_auth_routes.py``:
 
 * ``TestClient(app)`` (sync) for HTTP exercising.
-* ``app.dependency_overrides`` swaps ``get_current_user_id`` and
-  ``get_current_extension_user`` when we want to skip the real JWT layer.
+* ``app.dependency_overrides`` swaps ``get_current_user_id`` when we want
+  to skip the real Supabase JWT layer.
 * Repository functions are replaced with :class:`AsyncMock` via
   ``monkeypatch.setattr(<dotted_path>, ...)`` so we never hit Supabase.
 * :func:`asyncio.create_task` is replaced with a sync-runner inside the
@@ -15,6 +15,12 @@ Router wiring: T9 mounts ``extension.routes.router`` at ``/extension``
 inside ``app/api/router.py``, so ``TestClient(app)`` reaches
 ``/api/extension/*`` out of the box — no per-file mount workaround
 needed here.
+
+PIVOT (2026-05-24): tests for ``POST /api/extension/pair`` are gone —
+that endpoint and the custom JWT pairing dance no longer exist. Auth on
+``/messages`` and ``/telemetry`` is now ``get_current_user_id`` (the
+standard Supabase JWT validator), exercised via dependency override in
+the same shape as ``/status``.
 """
 from __future__ import annotations
 
@@ -30,24 +36,12 @@ from app.core.security import get_current_user_id
 from app.main import app
 from app.modules.extension import service as ext_service
 from app.modules.extension.schemas import ExtensionStatusResponse
-from app.modules.extension.security import (
-    get_current_extension_user,
-    issue_pairing_token,
-    issue_refresh_token,
-)
 
 # Stable test ids — keep assertions deterministic across runs.
 TEST_USER_ID = UUID("22222222-2222-2222-2222-222222222222")
-TEST_SECRET = "test-jwt-secret-routes-extension-0123456789"
 
 
 # ─── fixtures ──────────────────────────────────────────────────────────
-
-
-@pytest.fixture(autouse=True)
-def _configure_jwt_secret(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test mints/decodes JWTs — needs a non-empty secret."""
-    monkeypatch.setattr(settings, "SUPABASE_JWT_SECRET", TEST_SECRET)
 
 
 @pytest.fixture(autouse=True)
@@ -69,25 +63,17 @@ def _clear_overrides() -> Iterator[None]:
 def fake_repository(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Replace every extension repository function with an AsyncMock.
 
-    Returns a MagicMock with the individual mocks as attributes so a
-    single test can assert on ``fake_repository.upsert_install.await_count``
-    or set ``fake_repository.get_install_for_user.return_value = ...``.
+    PIVOT (2026-05-24): install-registry functions are gone; only
+    ``get_or_create_extension_session``, ``insert_telemetry`` and
+    ``insert_mobile_lead`` remain.
     """
     session_id = uuid4()
     repo = MagicMock(name="extension_repository", _session_id=session_id)
-    repo.upsert_install = AsyncMock(return_value=None)
-    repo.get_install = AsyncMock(return_value=None)
-    repo.get_install_for_user = AsyncMock(return_value=None)
-    repo.touch_install = AsyncMock(return_value=None)
     repo.get_or_create_extension_session = AsyncMock(return_value=session_id)
     repo.insert_telemetry = AsyncMock(return_value=None)
     repo.insert_mobile_lead = AsyncMock(return_value=None)
 
     for name in (
-        "upsert_install",
-        "get_install",
-        "get_install_for_user",
-        "touch_install",
         "get_or_create_extension_session",
         "insert_telemetry",
         "insert_mobile_lead",
@@ -149,10 +135,6 @@ def client() -> TestClient:
 # ─── helpers ───────────────────────────────────────────────────────────
 
 
-def _bearer(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
 def _message(wa_msg_id: str = "wa-1") -> dict:
     return {
         "wa_chatid": "5511999999999@c.us",
@@ -183,66 +165,6 @@ def _batch(
 
 
 # ───────────────────────────────────────────────────────────────────────
-# POST /api/extension/pair
-# ───────────────────────────────────────────────────────────────────────
-
-
-def test_pair_happy_path(
-    client: TestClient, fake_repository: MagicMock
-) -> None:
-    """Valid pairing JWT → 200 + SuccessResponse with refresh_token + user_id."""
-    uid = uuid4()
-    token = issue_pairing_token(uid)
-    body = {
-        "pairing_token": token,
-        "extension_install_id": "install-happy",
-        "extension_version": "1.0.0",
-        "user_agent": "Mozilla/5.0",
-    }
-
-    response = client.post("/api/extension/pair", json=body)
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["message"] == "ok"
-    data = payload["data"]
-    assert data["user_id"] == str(uid)
-    assert isinstance(data["refresh_token"], str) and data["refresh_token"]
-    fake_repository.upsert_install.assert_awaited_once()
-
-
-def test_pair_invalid_token_401(
-    client: TestClient, fake_repository: MagicMock
-) -> None:
-    """Garbage pairing token → 401 code='pairing_expired'."""
-    body = {
-        "pairing_token": "not-a-jwt",
-        "extension_install_id": "install-x",
-    }
-
-    response = client.post("/api/extension/pair", json=body)
-
-    assert response.status_code == 401, response.text
-    detail = response.json()["detail"]
-    assert isinstance(detail, dict)
-    assert detail["code"] == "pairing_expired"
-    fake_repository.upsert_install.assert_not_awaited()
-
-
-def test_pair_missing_field_422(client: TestClient) -> None:
-    """Missing required field (``extension_install_id``) → 422."""
-    body = {"pairing_token": "whatever"}
-
-    response = client.post("/api/extension/pair", json=body)
-
-    assert response.status_code == 422
-    detail = response.json()["detail"]
-    assert isinstance(detail, list) and detail
-    missing = {tuple(err["loc"][-1:])[0] for err in detail}
-    assert "extension_install_id" in missing
-
-
-# ───────────────────────────────────────────────────────────────────────
 # POST /api/extension/messages
 # ───────────────────────────────────────────────────────────────────────
 
@@ -253,15 +175,14 @@ def test_messages_happy_path(
     fake_insert_many: AsyncMock,
     fake_report_service: MagicMock,
 ) -> None:
-    """Valid refresh token + valid version + single-batch → 202 + summary."""
-    uid = uuid4()
+    """Valid Supabase JWT + valid version + single-batch → 202 + summary."""
     fake_insert_many.return_value = 1
-    refresh = issue_refresh_token(uid)
+    app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
 
     response = client.post(
         "/api/extension/messages",
         json=_batch(),
-        headers={**_bearer(refresh), "X-Extension-Version": "1.0.0"},
+        headers={"X-Extension-Version": "1.0.0"},
     )
 
     assert response.status_code == 202, response.text
@@ -276,36 +197,16 @@ def test_messages_happy_path(
 def test_messages_missing_auth_returns_4xx(
     client: TestClient, fake_repository: MagicMock
 ) -> None:
-    """No Authorization header → 401 (auth dependency rejects)."""
+    """No Authorization header → 401/403 (HTTPBearer rejects)."""
     response = client.post(
         "/api/extension/messages",
         json=_batch(),
         headers={"X-Extension-Version": "1.0.0"},
     )
 
-    # FastAPI's ``Header(...)`` with a default of None on the dep input is
-    # used in security.py, which raises 401 explicitly. Allow 401/422 in
-    # case the Starlette/FastAPI pin shifts the missing-header semantics.
-    assert response.status_code in (401, 422), response.text
-
-
-def test_messages_bad_refresh_token_401_pairing_expired(
-    client: TestClient, fake_repository: MagicMock
-) -> None:
-    """Garbage refresh JWT → 401 code='pairing_expired'."""
-    response = client.post(
-        "/api/extension/messages",
-        json=_batch(),
-        headers={
-            **_bearer("not-a-real-jwt"),
-            "X-Extension-Version": "1.0.0",
-        },
-    )
-
-    assert response.status_code == 401, response.text
-    detail = response.json()["detail"]
-    assert isinstance(detail, dict)
-    assert detail["code"] == "pairing_expired"
+    # ``HTTPBearer(auto_error=True)`` (default in core.security) returns
+    # 403 ``Not authenticated`` when the header is missing; accept either.
+    assert response.status_code in (401, 403), response.text
 
 
 def test_messages_outdated_version_409(
@@ -321,15 +222,12 @@ def test_messages_outdated_version_409(
     auth layer.
     """
     monkeypatch.setattr(settings, "EXTENSION_MIN_VERSION", "1.0.0")
-    app.dependency_overrides[get_current_extension_user] = lambda: TEST_USER_ID
+    app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
 
     response = client.post(
         "/api/extension/messages",
         json=_batch(extension_version="0.9.0"),
-        headers={
-            **_bearer("ignored-due-to-override"),
-            "X-Extension-Version": "0.9.0",
-        },
+        headers={"X-Extension-Version": "0.9.0"},
     )
 
     assert response.status_code == 409, response.text
@@ -349,15 +247,12 @@ def test_messages_final_batch_fires_worker(
     """Final batch (``batch_index == total_batches - 1``) → trigger_generate fires."""
     import asyncio as _aio
 
-    app.dependency_overrides[get_current_extension_user] = lambda: TEST_USER_ID
+    app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
 
     response = client.post(
         "/api/extension/messages",
         json=_batch(batch_index=2, total_batches=3),
-        headers={
-            **_bearer("ignored-due-to-override"),
-            "X-Extension-Version": "1.0.0",
-        },
+        headers={"X-Extension-Version": "1.0.0"},
     )
 
     assert response.status_code == 202, response.text
@@ -393,15 +288,12 @@ def test_messages_non_final_batch_does_not_fire_worker(
     fake_report_service: MagicMock,
 ) -> None:
     """Non-final batch → ``trigger_generate`` is NOT called."""
-    app.dependency_overrides[get_current_extension_user] = lambda: TEST_USER_ID
+    app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
 
     response = client.post(
         "/api/extension/messages",
         json=_batch(batch_index=0, total_batches=3),
-        headers={
-            **_bearer("ignored-due-to-override"),
-            "X-Extension-Version": "1.0.0",
-        },
+        headers={"X-Extension-Version": "1.0.0"},
     )
 
     assert response.status_code == 202, response.text
@@ -413,17 +305,14 @@ def test_messages_extra_field_in_message_422(
     client: TestClient, fake_repository: MagicMock
 ) -> None:
     """``ExtensionMessage`` is ``extra='forbid'`` — a stray ``foo`` → 422."""
-    app.dependency_overrides[get_current_extension_user] = lambda: TEST_USER_ID
+    app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
     msg = _message()
     msg["foo"] = "bar"  # unknown field
 
     response = client.post(
         "/api/extension/messages",
         json=_batch(messages=[msg]),
-        headers={
-            **_bearer("ignored-due-to-override"),
-            "X-Extension-Version": "1.0.0",
-        },
+        headers={"X-Extension-Version": "1.0.0"},
     )
 
     assert response.status_code == 422, response.text
@@ -444,12 +333,11 @@ def test_telemetry_happy_path_204(
     client: TestClient, fake_repository: MagicMock
 ) -> None:
     """Valid event → 204 No Content + repository called once."""
-    app.dependency_overrides[get_current_extension_user] = lambda: TEST_USER_ID
+    app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
 
     response = client.post(
         "/api/extension/telemetry",
         json={"event": "collect_started", "extension_version": "1.0.0"},
-        headers=_bearer("ignored-due-to-override"),
     )
 
     assert response.status_code == 204, response.text
@@ -461,7 +349,7 @@ def test_telemetry_pii_field_422(
     client: TestClient, fake_repository: MagicMock
 ) -> None:
     """PII field (``text``) → Pydantic 422 (``extra='forbid'``)."""
-    app.dependency_overrides[get_current_extension_user] = lambda: TEST_USER_ID
+    app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
 
     response = client.post(
         "/api/extension/telemetry",
@@ -470,7 +358,6 @@ def test_telemetry_pii_field_422(
             "extension_version": "1.0.0",
             "text": "should not be here",  # PII leak attempt
         },
-        headers=_bearer("ignored-due-to-override"),
     )
 
     assert response.status_code == 422, response.text
@@ -481,7 +368,7 @@ def test_telemetry_pii_wa_chatid_422(
     client: TestClient, fake_repository: MagicMock
 ) -> None:
     """PII field (``wa_chatid``) → 422 as well — verifies the guard is broad."""
-    app.dependency_overrides[get_current_extension_user] = lambda: TEST_USER_ID
+    app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
 
     response = client.post(
         "/api/extension/telemetry",
@@ -490,7 +377,6 @@ def test_telemetry_pii_wa_chatid_422(
             "extension_version": "1.0.0",
             "wa_chatid": "5511999999999@c.us",
         },
-        headers=_bearer("ignored-due-to-override"),
     )
 
     assert response.status_code == 422
@@ -504,16 +390,15 @@ def test_telemetry_rate_limited_429(
 ) -> None:
     """After ``EXTENSION_TELEMETRY_RATE_PER_MINUTE`` calls → 429."""
     monkeypatch.setattr(settings, "EXTENSION_TELEMETRY_RATE_PER_MINUTE", 3)
-    app.dependency_overrides[get_current_extension_user] = lambda: TEST_USER_ID
+    app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
 
     body = {"event": "collect_started", "extension_version": "1.0.0"}
-    headers = _bearer("ignored-due-to-override")
 
     for _ in range(3):
-        r = client.post("/api/extension/telemetry", json=body, headers=headers)
+        r = client.post("/api/extension/telemetry", json=body)
         assert r.status_code == 204, r.text
 
-    r = client.post("/api/extension/telemetry", json=body, headers=headers)
+    r = client.post("/api/extension/telemetry", json=body)
     assert r.status_code == 429, r.text
     detail = r.json()["detail"]
     assert isinstance(detail, dict)
@@ -538,12 +423,12 @@ def test_status_authenticated_200(
     fake_repository: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Authenticated user + paired install → 200 with paired=True shape.
+    """Authenticated user → 200 with the ExtensionStatusResponse shape.
 
-    Patches ``get_status`` directly because the underlying call into
-    ``captured_messages.stats_for_user`` is fragile to mock at the route
-    layer (it lives behind a lazy import). The test still exercises the
-    full route → service → response envelope path.
+    Patches ``get_status`` on the service module directly because the
+    underlying call into ``captured_messages.stats_for_user`` is fragile
+    to mock at the route layer (it lives behind a lazy import). The test
+    still exercises the full route → service → response envelope path.
     """
     app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
 
@@ -553,15 +438,6 @@ def test_status_authenticated_200(
         last_collection_message_count=42,
         extension_min_version="1.0.0",
     )
-    monkeypatch.setattr(
-        "app.modules.extension.service.get_status",
-        AsyncMock(return_value=fake_status),
-    )
-
-    # Patching the module attribute under ``app.modules.extension.service``
-    # doesn't reach the import already done by routes.py (``from
-    # app.modules.extension import service``). Patch the binding on the
-    # ``service`` module itself, which is what the route calls.
     monkeypatch.setattr(
         ext_service,
         "get_status",

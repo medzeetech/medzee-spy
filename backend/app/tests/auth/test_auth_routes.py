@@ -112,7 +112,6 @@ def fake_service() -> MagicMock:
         return_value=SignupResponse(
             user=_user_payload(),
             session=_session_payload(),
-            extension_pairing_token="ext-pairing-tok-test",
         ),
     )
     svc.login = AsyncMock(
@@ -163,9 +162,9 @@ def test_post_signup_happy_path(client: TestClient, fake_service: MagicMock) -> 
     assert data["session"]["refresh_token"] == "refresh_tok_test"
     assert data["session"]["expires_in"] == 3600
     assert data["session"]["token_type"] == "bearer"
-    # F8 / CHX-01 — signup envelope must surface the pairing JWT so the
-    # frontend can hand it off to the Chrome extension.
-    assert data["extension_pairing_token"] == "ext-pairing-tok-test"
+    # PIVOT (2026-05-24): signup no longer ships an extension pairing
+    # token — the extension authenticates via Supabase login directly.
+    assert "extension_pairing_token" not in data
     fake_service.signup.assert_awaited_once()
 
 

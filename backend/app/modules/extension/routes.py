@@ -1,12 +1,19 @@
 """HTTP routes for the Chrome extension ingestion module (F8 / §4.2 / T8).
 
-Five endpoints, mounted at ``/api/extension`` by ``app.api.router`` (T9):
+Four endpoints, mounted at ``/api/extension`` by ``app.api.router`` (T9):
 
-* ``POST   /pair``        — exchange a pairing JWT for a refresh JWT (no auth)
-* ``POST   /messages``    — receive a batch of captured messages (refresh auth)
-* ``GET    /status``      — pairing + last-collection status (user JWT)
-* ``POST   /telemetry``   — no-PII operational event (refresh auth)
+* ``POST   /messages``    — receive a batch of captured messages (Supabase JWT)
+* ``GET    /status``      — pairing + last-collection status (Supabase JWT)
+* ``POST   /telemetry``   — no-PII operational event (Supabase JWT)
 * ``POST   /mobile-lead`` — capture a mobile-redirect lead (no auth)
+
+PIVOT (2026-05-24): the ``POST /pair`` endpoint and the custom
+``extension_pairing``/``extension_refresh`` JWT pair are gone. The
+extension now logs in directly with email+password via Supabase and uses
+the standard Supabase access token as ``Bearer`` on every call. Auth on
+``/messages``, ``/status`` and ``/telemetry`` is therefore
+``Depends(get_current_user_id)`` from :mod:`app.core.security` — the
+same validator the rest of the app uses.
 
 Design contracts kept here, not in the service layer:
 
@@ -42,13 +49,10 @@ from app.core.security import get_current_user_id
 from app.modules.extension import service
 from app.modules.extension.schemas import (
     ExtensionMessageBatch,
-    ExtensionPairRequest,
-    ExtensionPairResponse,
     ExtensionStatusResponse,
     ExtensionTelemetryEvent,
     MobileRedirectLeadCreate,
 )
-from app.modules.extension.security import get_current_extension_user
 
 logger = logging.getLogger(__name__)
 
@@ -99,28 +103,6 @@ def _assert_version_ok(version: str | None) -> None:
         )
 
 
-# ─── POST /pair ────────────────────────────────────────────────────────
-
-
-@router.post(
-    "/pair",
-    response_model=SuccessResponse[ExtensionPairResponse],
-    summary="Trade a pairing JWT for a long-lived refresh JWT (CHX-01)",
-)
-async def pair(
-    req: ExtensionPairRequest,
-) -> SuccessResponse[ExtensionPairResponse]:
-    """Pair the extension with the user account.
-
-    No auth header — the pairing JWT in the body **is** the auth. On
-    success the response carries a long-lived refresh token; the
-    extension stores it in ``chrome.storage.local`` and sends it as
-    ``Bearer`` on every subsequent call.
-    """
-    result = await service.pair_extension(req)
-    return SuccessResponse(data=result)
-
-
 # ─── POST /messages ────────────────────────────────────────────────────
 
 
@@ -131,7 +113,7 @@ async def pair(
 )
 async def receive_messages(
     batch: ExtensionMessageBatch,
-    user_id: UUID = Depends(get_current_extension_user),
+    user_id: UUID = Depends(get_current_user_id),
     x_extension_version: str | None = Header(
         default=None, alias="X-Extension-Version"
     ),
@@ -163,12 +145,10 @@ async def receive_messages(
 async def get_status_route(
     user_id: UUID = Depends(get_current_user_id),
 ) -> SuccessResponse[ExtensionStatusResponse]:
-    """Return whether the current user has a paired extension install.
+    """Return whether the current user has any extension-sourced collection.
 
-    Uses the standard Supabase user JWT (not the extension refresh
-    token) because this endpoint is hit by the **frontend** SPA, not
-    by the extension itself — the frontend may need to render "Pareada"
-    / "Não pareada" even when the extension is not installed yet.
+    Uses the standard Supabase user JWT — both the frontend SPA and the
+    extension itself hit this endpoint with that same token post-pivot.
     """
     result = await service.get_status(user_id)
     return SuccessResponse(data=result)
@@ -185,7 +165,7 @@ async def get_status_route(
 )
 async def telemetry(
     event: ExtensionTelemetryEvent,
-    user_id: UUID = Depends(get_current_extension_user),
+    user_id: UUID = Depends(get_current_user_id),
 ) -> Response:
     """Record one telemetry event. 204 No Content on success.
 
