@@ -19,11 +19,16 @@ import type { ExtensionMessage } from "../lib/messages.js";
 // VERY VISIBLE marker — proves the page-world script actually loaded.
 // If you see this in the web.whatsapp.com console, MAIN-world injection
 // worked. If you DON'T see it, the script is being blocked somehow.
-// eslint-disable-next-line no-console
-console.log(
-  "%c[MEDZEE WA-COLLECTOR] MAIN-world script loaded ✓",
-  "background:#FFA500;color:#000;padding:4px 8px;font-weight:bold",
-);
+function mlog(stage: string, extra?: unknown): void {
+  // eslint-disable-next-line no-console
+  console.log(
+    `%c[MEDZEE WA] ${stage}`,
+    "background:#FFA500;color:#000;padding:3px 7px;font-weight:bold;border-radius:3px",
+    extra ?? "",
+  );
+}
+
+mlog("MAIN-world script loaded ✓");
 
 const EXT_VERSION = "1.0.0"; // page-world has no chrome.runtime — version is hard-coded from manifest; T10 will keep sync.
 
@@ -122,18 +127,27 @@ function mapMessage(m: WPPMessage, chat: WPPChat): ExtensionMessage | null {
 // --- wa-js readiness ------------------------------------------------------
 
 async function waitForWPP(maxMs = 60_000): Promise<WPPGlobal> {
+  mlog("waitForWPP: aguardando window.WPP…", { window_has_WPP: !!window.WPP });
   const start = Date.now();
   while (Date.now() - start < maxMs) {
     const wpp = window.WPP;
-    if (wpp?.webpack?.isReady) return wpp;
+    if (wpp?.webpack?.isReady) {
+      mlog("waitForWPP: WPP.webpack.isReady=true ✓", { elapsed_ms: Date.now() - start });
+      return wpp;
+    }
     if (wpp?.webpack?.onReady) {
+      mlog("waitForWPP: chamando WPP.webpack.onReady(...)…");
       await new Promise<void>((resolve) => {
         wpp.webpack!.onReady(resolve);
       });
-      if (window.WPP) return window.WPP;
+      if (window.WPP) {
+        mlog("waitForWPP: onReady resolveu ✓", { elapsed_ms: Date.now() - start });
+        return window.WPP;
+      }
     }
     await new Promise((r) => setTimeout(r, 500));
   }
+  mlog("waitForWPP: TIMEOUT ✗", { elapsed_ms: maxMs });
   throw new Error("WPP not ready within timeout");
 }
 
@@ -153,10 +167,12 @@ function isLoggedIn(wpp: WPPGlobal): boolean {
 // --- collection -----------------------------------------------------------
 
 async function collectAll(): Promise<void> {
+  mlog("collectAll: START ▶");
   let wpp: WPPGlobal;
   try {
     wpp = await waitForWPP();
   } catch (err) {
+    mlog("collectAll: WPP timeout — ABORT", { error: String(err) });
     postToContent({
       from: "medzee:wa-collector",
       type: "event",
@@ -167,12 +183,16 @@ async function collectAll(): Promise<void> {
     return;
   }
 
+  mlog("collectAll: checando isLoggedIn…");
   if (!isLoggedIn(wpp)) {
+    mlog("collectAll: NÃO logado — ABORT");
     postToContent({ from: "medzee:wa-collector", type: "event", event: "wa_needs_login" });
     return;
   }
+  mlog("collectAll: logado ✓");
 
   if (!wpp.chat) {
+    mlog("collectAll: WPP.chat AUSENTE — ABORT", { wpp_keys: Object.keys(wpp) });
     postToContent({
       from: "medzee:wa-collector",
       type: "event",
@@ -184,8 +204,11 @@ async function collectAll(): Promise<void> {
 
   let chats: WPPChat[];
   try {
+    mlog("collectAll: chamando WPP.chat.list({onlyUsers:false, withLabels:false})…");
     chats = await wpp.chat.list({ onlyUsers: false, withLabels: false });
+    mlog("collectAll: chat.list retornou ✓", { count: chats.length });
   } catch (err) {
+    mlog("collectAll: chat.list FALHOU — ABORT", { error: String(err) });
     postToContent({
       from: "medzee:wa-collector",
       type: "event",
@@ -254,8 +277,14 @@ async function collectAll(): Promise<void> {
     messages_total: all.length,
   });
 
+  mlog("collectAll: iteração de chats COMPLETA, enviando batches…", {
+    chats_total: chats.length,
+    messages_total: all.length,
+  });
+
   // Chunk + emit each batch to content-script (which forwards to SW).
   const batches = chunkMessages(all, { extensionVersion: EXT_VERSION });
+  mlog("collectAll: chunked em batches", { batches_count: batches.length });
   for (const batch of batches) {
     postToContent({
       from: "medzee:wa-collector",
@@ -266,6 +295,7 @@ async function collectAll(): Promise<void> {
     await new Promise((r) => setTimeout(r, 50));
   }
 
+  mlog("collectAll: DONE ✓");
   postToContent({
     from: "medzee:wa-collector",
     type: "event",
@@ -283,7 +313,11 @@ window.addEventListener("message", (event) => {
   if (!data || typeof data !== "object") return;
   const d = data as { from?: unknown; cmd?: unknown };
   if (d.from !== "medzee:cmd") return;
-  if (d.cmd === "collect") void collectAll();
+  if (d.cmd === "collect") {
+    mlog("recebido cmd 'collect' — iniciando collectAll");
+    void collectAll();
+  }
 });
 
+mlog("event listener registrado, aguardando cmd 'collect'");
 postToContent({ from: "medzee:wa-collector", type: "event", event: "loaded" });
