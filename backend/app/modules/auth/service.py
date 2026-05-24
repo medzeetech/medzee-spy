@@ -23,7 +23,24 @@ from uuid import UUID
 
 from gotrue.errors import AuthApiError
 
+from supabase import create_client as _create_supabase_client
+
 from app.clients.supabase import get_supabase_admin_client
+from app.core.config import settings
+
+
+def _fresh_anon_client():
+    """Cria um cliente anon novo (sem cache) — usado APENAS pra
+    ``sign_in_with_password`` em signup/login.
+
+    Motivo (bug de prod 2026-05-24): ``supabase-py`` substitui o token
+    interno do cliente pelo ``access_token`` do user recém-logado, então
+    chamar ``sign_in_with_password`` no cliente admin singleton (com
+    service_role) suja a chave — o próximo ``admin.create_user`` falha
+    com ``not_admin`` 403 ("User not allowed"). Mesmo no cliente anon
+    singleton, sucessivos sign-ins iam mantendo o último token do user.
+    Cliente fresh a cada chamada evita qualquer contaminação."""
+    return _create_supabase_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 from app.modules.auth import repository
 from app.modules.auth.schemas import (
     LoginRequest,
@@ -257,8 +274,14 @@ class AuthService:
             raise ProfileCreationFailed(str(user_id)) from exc
 
         # Step 5 — sign in to obtain session tokens.
+        # CRÍTICO: usa cliente ANON dedicado, não self._supabase (admin).
+        # supabase-py guarda o token internamente após sign_in_with_password
+        # — se chamado no admin_client, ele SUBSTITUI o service_role pelo
+        # access_token do user recém-criado, e o próximo signup do mesmo
+        # processo falha com `not_admin` 403. Por isso o bug era intermitente
+        # ("o primeiro signup funciona, o segundo quebra").
         try:
-            sign_in_response = self._supabase.auth.sign_in_with_password(
+            sign_in_response = _fresh_anon_client().auth.sign_in_with_password(
                 {"email": email, "password": req.password}
             )
         except AuthApiError as exc:
@@ -307,8 +330,10 @@ class AuthService:
             extra={"op": "login", "email_domain": _email_domain(email)},
         )
 
+        # Mesma razão do signup: usa cliente anon fresh — chamar
+        # sign_in_with_password no admin singleton suja o service_role.
         try:
-            response = self._supabase.auth.sign_in_with_password(
+            response = _fresh_anon_client().auth.sign_in_with_password(
                 {"email": email, "password": req.password}
             )
         except AuthApiError as exc:

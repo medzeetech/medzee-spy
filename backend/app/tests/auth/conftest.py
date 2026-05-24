@@ -78,6 +78,28 @@ def fake_supabase_admin() -> MagicMock:
     return fake
 
 
+@pytest.fixture(autouse=True)
+def _patch_fresh_anon_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> MagicMock:
+    """Mocka ``_fresh_anon_client`` — usado em signup/login pra
+    ``sign_in_with_password`` (separado do admin client pra não sujar
+    a service_role key; ver auth/service.py).
+
+    Devolve o mesmo mock instanciado uma vez, com ``sign_in_with_password``
+    pré-stubbed pra retornar a session canônica. Testes que precisam
+    customizar podem usar a fixture explicitamente.
+    """
+    fake_anon = MagicMock(name="fresh_anon_client")
+    default_resp = _build_fake_session(TEST_USER_ID, "x@y.com")
+    fake_anon.auth.sign_in_with_password.return_value = default_resp
+    monkeypatch.setattr(
+        "app.modules.auth.service._fresh_anon_client",
+        lambda: fake_anon,
+    )
+    return fake_anon
+
+
 @pytest.fixture
 def fake_admin_supabase_factory(
     monkeypatch: pytest.MonkeyPatch,

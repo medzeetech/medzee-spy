@@ -79,6 +79,7 @@ def _fake_session_response(
 
 async def test_signup_happy_path(
     fake_supabase_admin: MagicMock,
+    _patch_fresh_anon_client: MagicMock,
     fake_repository,
     valid_signup_request,
 ) -> None:
@@ -119,10 +120,12 @@ async def test_signup_happy_path(
     args, _ = fake_repository.create_profile.call_args
     assert args[0] == TEST_USER_ID
 
-    # sign-in.
-    fake_supabase_admin.auth.sign_in_with_password.assert_called_once_with(
+    # sign-in (em cliente anon dedicado, não no admin — ver _fresh_anon_client
+    # em auth/service.py: chamar sign_in no admin client suja o service_role).
+    _patch_fresh_anon_client.auth.sign_in_with_password.assert_called_once_with(
         {"email": "x@y.com", "password": "hunter2"}
     )
+    fake_supabase_admin.auth.sign_in_with_password.assert_not_called()
 
     # response envelope.
     assert resp.user.id == TEST_USER_ID
@@ -249,11 +252,16 @@ async def test_signup_password_too_weak_supabase_error(
 
 async def test_login_happy_path(
     fake_supabase_admin: MagicMock,
+    _patch_fresh_anon_client: MagicMock,
     fake_repository,
 ) -> None:
-    """sign_in returns a user tagged with 'spy' → LoginResponse passes through."""
+    """sign_in returns a user tagged with 'spy' → LoginResponse passes through.
+
+    Login agora roda no cliente anon dedicado (não no admin) pra não sujar
+    o service_role do singleton — ver auth/service.py.
+    """
     user = _fake_user(app_metadata={"projects": ["spy"]})
-    fake_supabase_admin.auth.sign_in_with_password.return_value = (
+    _patch_fresh_anon_client.auth.sign_in_with_password.return_value = (
         _fake_session_response(user=user)
     )
 
@@ -267,10 +275,11 @@ async def test_login_happy_path(
 
 async def test_login_invalid_credentials_raises(
     fake_supabase_admin: MagicMock,
+    _patch_fresh_anon_client: MagicMock,
     fake_repository,
 ) -> None:
     """Supabase's 'invalid login credentials' family raises InvalidCredentials."""
-    fake_supabase_admin.auth.sign_in_with_password.side_effect = AuthApiError(
+    _patch_fresh_anon_client.auth.sign_in_with_password.side_effect = AuthApiError(
         "Invalid login credentials", 400, "invalid_credentials"
     )
 
@@ -281,11 +290,12 @@ async def test_login_invalid_credentials_raises(
 
 async def test_login_user_not_in_spy_raises(
     fake_supabase_admin: MagicMock,
+    _patch_fresh_anon_client: MagicMock,
     fake_repository,
 ) -> None:
     """A News-only subscriber (no 'spy' tag) is rejected with UserNotInSpy."""
     user = _fake_user(app_metadata={"projects": ["news"]})
-    fake_supabase_admin.auth.sign_in_with_password.return_value = (
+    _patch_fresh_anon_client.auth.sign_in_with_password.return_value = (
         _fake_session_response(user=user)
     )
 
