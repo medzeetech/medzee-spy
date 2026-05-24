@@ -213,7 +213,22 @@ async function handleAbort(): Promise<MedzeeRuntimeReply> {
 
 // --- batch ingestion ------------------------------------------------------
 
-async function handleBatch(batch: ExtensionMessageBatch): Promise<MedzeeRuntimeReply> {
+// Serial queue pra batches. Sem isso, 3 batches chegam em paralelo no SW,
+// 3 POSTs em paralelo no backend, race condition: o batch final dispara
+// trigger_generate ANTES dos batches anteriores terminarem insert no DB,
+// resultando em relatório com poucas msgs persistidas naquele instante.
+// Promise chain garante 1 batch processa de cada vez (FIFO pelo postMessage
+// order do wa-collector).
+let _batchQueue: Promise<unknown> = Promise.resolve();
+
+function handleBatch(batch: ExtensionMessageBatch): Promise<MedzeeRuntimeReply> {
+  const task = _batchQueue.then(() => _processBatch(batch));
+  // Catch erros pra não quebrar a chain — cada batch é independente.
+  _batchQueue = task.catch(() => undefined);
+  return task;
+}
+
+async function _processBatch(batch: ExtensionMessageBatch): Promise<MedzeeRuntimeReply> {
   const state = await getState();
   if (!state.session) {
     return { type: "medzee:error", code: "not_logged_in" };
