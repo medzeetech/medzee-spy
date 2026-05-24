@@ -174,6 +174,7 @@ async function handleStart(): Promise<MedzeeRuntimeReply> {
       batches_sent: 0,
       messages_sent: 0,
       started_at: new Date().toISOString(),
+      current_step: "Iniciando análise…",
     },
   });
 
@@ -202,6 +203,19 @@ async function handleStart(): Promise<MedzeeRuntimeReply> {
   return { type: "medzee:ok" };
 }
 
+// --- progress step (popup-facing label) ----------------------------------
+
+async function handleProgressStep(step: string): Promise<MedzeeRuntimeReply> {
+  // Only update if we're mid-collection; ignore late-arriving events.
+  const state = await getState();
+  const cip = state.collection_in_progress;
+  if (!cip) return { type: "medzee:ok" };
+  await setState({
+    collection_in_progress: { ...cip, current_step: step },
+  });
+  return { type: "medzee:ok" };
+}
+
 // --- abort collection -----------------------------------------------------
 
 async function handleAbort(): Promise<MedzeeRuntimeReply> {
@@ -213,7 +227,22 @@ async function handleAbort(): Promise<MedzeeRuntimeReply> {
 
 // --- batch ingestion ------------------------------------------------------
 
-async function handleBatch(batch: ExtensionMessageBatch): Promise<MedzeeRuntimeReply> {
+// Serial queue pra batches. Sem isso, 3 batches chegam em paralelo no SW,
+// 3 POSTs em paralelo no backend, race condition: o batch final dispara
+// trigger_generate ANTES dos batches anteriores terminarem insert no DB,
+// resultando em relatório com poucas msgs persistidas naquele instante.
+// Promise chain garante 1 batch processa de cada vez (FIFO pelo postMessage
+// order do wa-collector).
+let _batchQueue: Promise<unknown> = Promise.resolve();
+
+function handleBatch(batch: ExtensionMessageBatch): Promise<MedzeeRuntimeReply> {
+  const task = _batchQueue.then(() => _processBatch(batch));
+  // Catch erros pra não quebrar a chain — cada batch é independente.
+  _batchQueue = task.catch(() => undefined);
+  return task;
+}
+
+async function _processBatch(batch: ExtensionMessageBatch): Promise<MedzeeRuntimeReply> {
   const state = await getState();
   if (!state.session) {
     return { type: "medzee:error", code: "not_logged_in" };
@@ -252,6 +281,7 @@ async function handleBatch(batch: ExtensionMessageBatch): Promise<MedzeeRuntimeR
           batches_sent: batchesSent,
           messages_sent: messagesSent,
           started_at: progress?.started_at ?? new Date().toISOString(),
+          current_step: `Enviando lote ${batchesSent}/${batch.total_batches}…`,
         },
       });
       await emitToAllMedzeeTabs({
@@ -355,6 +385,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       case "medzee:telemetry":
         reply = await handleTelemetry(message.payload);
+        break;
+      case "medzee:progress_step":
+        reply = await handleProgressStep(message.step);
         break;
       default:
         reply = { type: "medzee:error", code: "unknown_message" };

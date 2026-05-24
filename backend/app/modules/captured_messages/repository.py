@@ -89,6 +89,7 @@ def _serialize(item: CapturedMessageInsert) -> dict[str, Any]:
         "text": item.text,
         "raw_message_id": item.raw_message_id,
         "source": item.source,
+        "batch_id": item.batch_id,
     }
 
 
@@ -272,20 +273,23 @@ def _compute_stats_from_sample(
 
 
 async def query_last_n_per_chat(
-    user_id: UUID, *, n_per_chat: int = 30
+    user_id: UUID,
+    *,
+    n_per_chat: int = 30,
+    batch_id: str | None = None,
 ) -> list[CapturedMessage]:
     """Retorna as últimas ``n_per_chat`` mensagens de cada conversa do user.
 
     Sem janela temporal. Usa a RPC ``medzee_spy.top_n_messages_per_chat``
-    (migration ``f5_1_top_n_messages_per_chat_rpc``) que executa o top-N
-    via window function ``ROW_NUMBER() OVER (PARTITION BY wa_chatid
-    ORDER BY ts DESC)`` direto no Postgres.
+    (migrations f5_1 + f8_3 + f8_4) que executa o top-N via window function
+    ``ROW_NUMBER() OVER (PARTITION BY wa_chatid ORDER BY ts DESC)`` direto
+    no Postgres.
 
-    **Fix 2026-05-19**: a versão anterior fazia ``.select('*').order('wa_chatid')``
-    em Python depois de baixar tudo, e o limite default 1000 do PostgREST
-    cobria apenas 7 chats do user (o top chat sozinho tinha 2861 msgs e
-    dominava a primeira página alfabética). Resultado: relatório sempre
-    via "10 msgs em 2 conversas" em vez de 858 msgs em 47 conversas.
+    Quando ``batch_id`` é fornecido, a query filtra apenas mensagens daquela
+    execução específica de coleta — isso isola o relatório à coleta
+    correspondente (cada clique em "Gerar relatório" produz um batch_id
+    distinto). Quando ``batch_id=None``, retorna o histórico todo do user
+    (comportamento legado pré-f8_4).
 
     Returns:
         Lista plana de :class:`CapturedMessage`, ordenada por
@@ -296,13 +300,16 @@ async def query_last_n_per_chat(
     def _run() -> Any:
         # PostgREST .rpc() chama a function SECURITY INVOKER. Limit explícito
         # alto pra cobrir até 100 chats × 100 msgs = 10k.
+        params: dict[str, Any] = {
+            "p_user_id": str(user_id),
+            "p_n_per_chat": n_per_chat,
+        }
+        if batch_id is not None:
+            params["p_batch_id"] = batch_id
         return (
             get_supabase_admin_client()
             .schema("medzee_spy")
-            .rpc("top_n_messages_per_chat", {
-                "p_user_id": str(user_id),
-                "p_n_per_chat": n_per_chat,
-            })
+            .rpc("top_n_messages_per_chat", params)
             .limit(10_000)
             .execute()
         )
@@ -319,6 +326,7 @@ async def query_last_n_per_chat(
         extra={
             "user_id": str(user_id),
             "n_per_chat": n_per_chat,
+            "batch_id": batch_id,
             "kept_after_topN": len(parsed),
             "conversation_count": distinct_chats,
         },

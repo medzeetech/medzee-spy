@@ -126,6 +126,10 @@ async def ingest_batch(user_id: UUID, batch: ExtensionMessageBatch) -> dict:
             text=msg.text,
             raw_message_id=msg.wa_msg_id,
             source="extension",
+            # F8 — anchor pra isolar relatórios entre coletas distintas.
+            # Todos os batches da mesma "Gerar relatório" compartilham este
+            # UUID. Worker filtra por ele pra não fundir runs.
+            batch_id=batch.batch_id,
         )
         for msg in batch.messages
     ]
@@ -142,7 +146,10 @@ async def ingest_batch(user_id: UUID, batch: ExtensionMessageBatch) -> dict:
         report_service = get_report_service()
         asyncio.create_task(
             report_service.trigger_generate(
-                user_id, mode="last_n_per_chat", n_per_chat=30
+                user_id,
+                mode="last_n_per_chat",
+                n_per_chat=30,
+                batch_id=batch.batch_id,
             ),
             name=f"extension-trigger-{batch.batch_id}",
         )

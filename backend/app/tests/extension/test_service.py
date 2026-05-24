@@ -220,7 +220,7 @@ async def test_ingest_batch_final_fires_report(
         await _aio.gather(*pending, return_exceptions=True)
 
     report_service.trigger_generate.assert_awaited_once_with(
-        uid, mode="last_n_per_chat", n_per_chat=30
+        uid, mode="last_n_per_chat", n_per_chat=30, batch_id="batch-2"
     )
 
 

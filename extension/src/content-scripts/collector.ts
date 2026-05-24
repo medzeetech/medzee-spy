@@ -47,6 +47,40 @@ async function sendToSW(message: MedzeeRuntimeMessage): Promise<void> {
   }
 }
 
+/** Map a wa-collector event to a short human label rendered in the popup.
+ *  Returning null = no UI update (the event isn't user-facing). The labels
+ *  mirror the console stages the user sees in DevTools, just compacted. */
+function stepLabelFor(evt: PageWorldEvent): string | null {
+  switch (evt.event) {
+    case "loaded":
+      return "Aguardando WhatsApp Web…";
+    case "collect_started":
+      return typeof evt.chats_total === "number"
+        ? `Lendo ${evt.chats_total} conversa${evt.chats_total === 1 ? "" : "s"}…`
+        : "Lendo conversas…";
+    case "chat_progress":
+      if (
+        typeof evt.chats_processed === "number" &&
+        typeof evt.chats_total === "number"
+      ) {
+        return `Lendo conversas (${evt.chats_processed}/${evt.chats_total})…`;
+      }
+      return "Lendo conversas…";
+    case "chats_done":
+      return typeof evt.messages_total === "number"
+        ? `Empacotando ${evt.messages_total} mensagens…`
+        : "Empacotando mensagens…";
+    case "wa_needs_login":
+      return "Faça login no WhatsApp Web";
+    case "collect_failed":
+      return `Erro: ${evt.reason ?? "falha na coleta"}`;
+    case "done":
+      return "Concluído ✓";
+    default:
+      return null;
+  }
+}
+
 function telemetryPayloadFor(
   evt: PageWorldEvent
 ): ExtensionTelemetryEventPayload | null {
@@ -91,6 +125,12 @@ window.addEventListener("message", async (event) => {
     const tp = telemetryPayloadFor(data);
     if (tp) {
       await sendToSW({ type: "medzee:telemetry", payload: tp });
+    }
+
+    // Mirror the wa-collector stage onto the popup label (storage-driven).
+    const stepLabel = stepLabelFor(data);
+    if (stepLabel) {
+      await sendToSW({ type: "medzee:progress_step", step: stepLabel });
     }
 
     // Special: wa_needs_login should also notify the medzee-spy frontend tabs

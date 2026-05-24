@@ -38,6 +38,9 @@ export interface MedzeePersistedState {
     /** Running total of msgs persisted across all batches in this run. */
     messages_sent: number;
     started_at: string;
+    /** Human-readable progress step shown in the popup (PT-BR).
+     *  Ex.: "Lendo conversas (45/71)", "Enviando lote 2/3", "Concluído". */
+    current_step: string | null;
   } | null;
 }
 
