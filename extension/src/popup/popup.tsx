@@ -164,15 +164,21 @@ function App() {
     );
   } else if (collecting && state.collection_in_progress) {
     const cip = state.collection_in_progress;
+    const stepText = cip.current_step ?? "Iniciando análise…";
+    const isError = stepText.toLowerCase().startsWith("erro");
+    const isDone = stepText.startsWith("Concluído");
     body = (
       <>
-        <StatusBadge tone="info">Coletando…</StatusBadge>
+        <StatusBadge tone={isError ? "warn" : "info"}>
+          {isError ? "Atenção" : isDone ? "Pronto" : "Analisando…"}
+        </StatusBadge>
         <p className="popup__email-display">{session.email}</p>
-        <p className="popup__msg">
-          {cip.batches_sent} / {cip.total_batches} batches enviados
-        </p>
-        <div className="popup__spinner" aria-label="Coletando">
-          ⏳
+        <div className="popup__step">
+          <span
+            className={`popup__step-dot${isError ? " popup__step-dot--error" : isDone ? " popup__step-dot--done" : ""}`}
+            aria-hidden="true"
+          />
+          <span className="popup__step-label">{stepText}</span>
         </div>
       </>
     );

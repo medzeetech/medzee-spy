@@ -174,6 +174,7 @@ async function handleStart(): Promise<MedzeeRuntimeReply> {
       batches_sent: 0,
       messages_sent: 0,
       started_at: new Date().toISOString(),
+      current_step: "Iniciando análise…",
     },
   });
 
@@ -199,6 +200,19 @@ async function handleStart(): Promise<MedzeeRuntimeReply> {
 
   log("start.dispatched", { tab_id: waTabId });
   await telemetry({ event: "collect_started", extension_version: EXT_VERSION });
+  return { type: "medzee:ok" };
+}
+
+// --- progress step (popup-facing label) ----------------------------------
+
+async function handleProgressStep(step: string): Promise<MedzeeRuntimeReply> {
+  // Only update if we're mid-collection; ignore late-arriving events.
+  const state = await getState();
+  const cip = state.collection_in_progress;
+  if (!cip) return { type: "medzee:ok" };
+  await setState({
+    collection_in_progress: { ...cip, current_step: step },
+  });
   return { type: "medzee:ok" };
 }
 
@@ -267,6 +281,7 @@ async function _processBatch(batch: ExtensionMessageBatch): Promise<MedzeeRuntim
           batches_sent: batchesSent,
           messages_sent: messagesSent,
           started_at: progress?.started_at ?? new Date().toISOString(),
+          current_step: `Enviando lote ${batchesSent}/${batch.total_batches}…`,
         },
       });
       await emitToAllMedzeeTabs({
@@ -370,6 +385,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       case "medzee:telemetry":
         reply = await handleTelemetry(message.payload);
+        break;
+      case "medzee:progress_step":
+        reply = await handleProgressStep(message.step);
         break;
       default:
         reply = { type: "medzee:error", code: "unknown_message" };

@@ -114,7 +114,12 @@ export type MedzeeRuntimeMessage =
   | { type: "medzee:start" }
   | { type: "medzee:abort" }
   | { type: "medzee:batch"; payload: ExtensionMessageBatch }
-  | { type: "medzee:telemetry"; payload: ExtensionTelemetryEventPayload };
+  | { type: "medzee:telemetry"; payload: ExtensionTelemetryEventPayload }
+  /** Sent by the collector content-script as the wa-collector ticks
+   *  through its stages. SW writes `step` into
+   *  `collection_in_progress.current_step` so the popup reflects the
+   *  live progress (read from chrome.storage.onChanged). */
+  | { type: "medzee:progress_step"; step: string };
 
 export type MedzeeRuntimeReply =
   | {
