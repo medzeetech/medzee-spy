@@ -35,6 +35,8 @@ export interface MedzeePersistedState {
     batch_id: string;
     total_batches: number;
     batches_sent: number;
+    /** Running total of msgs persisted across all batches in this run. */
+    messages_sent: number;
     started_at: string;
   } | null;
 }

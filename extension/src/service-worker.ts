@@ -172,6 +172,7 @@ async function handleStart(): Promise<MedzeeRuntimeReply> {
       batch_id: crypto.randomUUID(),
       total_batches: 0,
       batches_sent: 0,
+      messages_sent: 0,
       started_at: new Date().toISOString(),
     },
   });
@@ -221,18 +222,20 @@ async function handleBatch(batch: ExtensionMessageBatch): Promise<MedzeeRuntimeR
   try {
     const resp = await apiSendBatch(batch, EXT_VERSION);
 
-    // Update progress
+    // Update progress (count-based — order-independent, no longer assumes
+    // 1000 msgs/batch). Final = received batches_sent reaches total_batches.
     const current = await getState();
     const progress = current.collection_in_progress;
     const batchesSent = (progress?.batches_sent ?? 0) + 1;
-    const isFinal = batch.batch_index === batch.total_batches - 1;
+    const messagesSent =
+      (progress?.messages_sent ?? 0) + batch.messages.length;
+    const isFinal = batchesSent >= batch.total_batches;
 
     if (isFinal) {
       await setState({
         collection_in_progress: null,
         last_collection_at: new Date().toISOString(),
-        last_collection_message_count:
-          (progress?.batches_sent ?? 0) * 1000 + batch.messages.length,
+        last_collection_message_count: messagesSent,
       });
       await telemetry({
         event: "collect_completed",
@@ -247,6 +250,7 @@ async function handleBatch(batch: ExtensionMessageBatch): Promise<MedzeeRuntimeR
           batch_id: batch.batch_id,
           total_batches: batch.total_batches,
           batches_sent: batchesSent,
+          messages_sent: messagesSent,
           started_at: progress?.started_at ?? new Date().toISOString(),
         },
       });
@@ -260,7 +264,13 @@ async function handleBatch(batch: ExtensionMessageBatch): Promise<MedzeeRuntimeR
         },
       });
     }
-    log("batch.sent", { index: batch.batch_index, total: batch.total_batches, final: isFinal });
+    log("batch.sent", {
+      index: batch.batch_index,
+      total: batch.total_batches,
+      batches_sent_running: batchesSent,
+      messages_sent_running: messagesSent,
+      final: isFinal,
+    });
     return { type: "medzee:ok" };
   } catch (err) {
     if (err instanceof UnauthorizedError) {
