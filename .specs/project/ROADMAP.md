@@ -1,7 +1,9 @@
 # Roadmap
 
-**Current Milestone:** M1 — Fluxo ponta a ponta funcional
-**Status:** ✅ COMPLETE smoke E2E em prod (2026-05-19). F1 deprecated · F2/F3/F4/F5/F6 ✅ done · F7 (route guards opcional) pendente.
+**Current Milestone:** M2 — Pivô provider WhatsApp (uazapi → Chrome Extension)
+**Status:** 🚧 IN PROGRESS — F8 spec aprovada 2026-05-24. M1 segue funcional via feature flag `WHATSAPP_PROVIDER=uazapi`.
+
+**Motivo do pivô:** uazapi paid mostra instabilidade puxando histórico de conversas (history-sync inconsistente, instâncias mortas em 1-2min, tier free recusa /chat/find). F8 substitui por Chrome Extension MV3 que lê WhatsApp Web na sessão real do user. Vide `.specs/features/f8-chrome-extension-ingestion/spec.md` + `context.md`.
 
 ---
 
@@ -94,14 +96,32 @@ sem mudança.
 
 ---
 
-## M2 — Polimento e relatórios recorrentes (pós-task)
+## M2 — Pivô provider WhatsApp (uazapi → Chrome Extension)
+
+**Goal:** Substituir provider externo instável (uazapi) por Chrome Extension MV3 que lê WhatsApp Web na sessão real do user. Eliminar dependência de lib não-oficial server-side.
+
+### Features
+
+**F8 — Chrome Extension Ingestion** — 🚧 SPEC APROVADA (2026-05-24)
+- Especificação completa em `.specs/features/f8-chrome-extension-ingestion/{spec,context}.md`
+- 14 requirement IDs (CHX-01 a CHX-14), 5 user stories (3 P1 + 2 P2 + 1 P3)
+- Mudanças-chave vs. F1/F4/F5:
+  - **Ordem invertida**: cadastro PRIMEIRO, extração DEPOIS (vs. QR → cadastro)
+  - **Sem QR no /spy** — substituído por tela de install + auto-detecção da extensão (`window.postMessage` probe)
+  - **Mobile bloqueado** com `MobileBlockScreen` + capture de email pra retargeting
+  - **uazapi atrás de feature flag** `WHATSAPP_PROVIDER=extension|uazapi` (rollback rápido)
+- Reaproveita: F2 (auth), F3 (worker Claude), F6 (DX), tabela `captured_messages` (novo campo `source='extension'`)
+- Próximas fases: design + tasks + execute
+
+## M3 — Polimento e relatórios recorrentes (pós-pivô)
 
 **Goal:** Tornar a UI já existente do dashboard funcional com dados reais e habilitar geração recorrente.
 
 ### Features
-- **Recurring Reports** — PLANNED — usar a UI existente em `/app/reports` (toggle 7/15/30/60 dias) para agendar regenerações.
+- **Recurring Reports** — PLANNED — agendar regenerações automáticas (extensão dispara em intervalos).
 - **Dashboard Real Data** — PLANNED — substituir mocks de `/app/dashboard` pela agregação dos relatórios persistidos.
-- **WhatsApp Reconnect UX** — PLANNED — `/app/whatsapp` reflete estado real da sessão e permite desconectar/reconectar.
+- **uazapi cleanup definitivo** — PLANNED — remover `app/clients/whatsapp/uazapi.py` + `app/workers/extract.py` após smoke de F8 em prod.
+- **Multi-browser (Firefox/Safari/Edge)** — PLANNED — port da extensão MV3.
 
 ---
 

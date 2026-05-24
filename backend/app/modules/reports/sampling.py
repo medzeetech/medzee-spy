@@ -12,7 +12,7 @@ Pure functions: no I/O, no logging. T19 owns the tests.
 """
 from __future__ import annotations
 
-from app.modules.whatsapp.schemas import (
+from app.modules.reports.schemas import (
     ConversationPayload,
     ExtractedPayload,
     MessagePayload,

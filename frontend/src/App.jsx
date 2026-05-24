@@ -1,52 +1,72 @@
-import { useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+// F8-T22 — Router wiring para o novo /spy flow invertido.
+//
+// Changes vs M1:
+//   - `/` continua sendo AgentScreen (landing pública).
+//   - `/spy` e `/spy/*` agora montam SpyFlowScreen (state machine T21)
+//     em vez do antigo SpyFlow.jsx (QR → Generating → Lead).
+//   - `/app/*` (dashboard logado) ganha mobile guard via AppMobileGuard:
+//     em mobile a extensão não roda, então não há sentido em renderizar
+//     dashboards — MobileBlockScreen captura email pra retargeting.
+//   - Rotas legacy standalone (`/qr`, `/lead-form`, `/connect`) redirecionam
+//     pra `/spy` (single entry point do funil).
+//   - SpyFlow.jsx legacy fica no disco até a próxima limpeza; só removemos
+//     o wiring por enquanto pra reduzir blast radius do PR.
+
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+
 import AgentScreen from './screens/AgentScreen.jsx';
-import QRScreen from './screens/QRScreen.jsx';
-import GeneratingScreen from './screens/GeneratingScreen.jsx';
-import LeadFormScreen from './screens/LeadFormScreen.jsx';
 import LoginScreen from './screens/LoginScreen.jsx';
-import ReportScreen from './screens/ReportScreen.jsx';
-import SpyFlow from './screens/SpyFlow.jsx';
+import SpyFlowScreen from './screens/SpyFlowScreen.jsx';
+import MobileBlockScreen from './screens/MobileBlockScreen.jsx';
 import DashboardLayout from './screens/dashboard/DashboardLayout.jsx';
 import DashboardPage from './screens/dashboard/DashboardPage.jsx';
 import ReportsListPage from './screens/dashboard/ReportsListPage.jsx';
 import ReportDetailPage from './screens/dashboard/ReportDetailPage.jsx';
 import WhatsAppPage from './screens/dashboard/WhatsAppPage.jsx';
-import ConnectScreen from './screens/dashboard/ConnectScreen.jsx';
 
-function MainFlow() {
-  const [phase, setPhase] = useState('agent');
-  const [whatsappSessionId, setWhatsappSessionId] = useState(null);
-  const navigate = useNavigate();
+import { useIsMobile } from './lib/device.js';
 
-  const goQR = () => setPhase('qr');
-  const goGenerating = () => setPhase('generating');
-  const goLead = () => setPhase('lead');
-  const goReport = () => navigate('/app/reports/latest');
-  const reset = () => setPhase('agent');
-
-  if (phase === 'agent') return <AgentScreen onShowQR={goQR} />;
-  if (phase === 'qr') return <QRScreen onSimulate={goGenerating} onSessionCreated={setWhatsappSessionId} />;
-  if (phase === 'generating') return <GeneratingScreen onComplete={goLead} />;
-  if (phase === 'lead') return <LeadFormScreen onSubmit={goReport} whatsappSessionId={whatsappSessionId} />;
-  return <ReportScreen onReset={reset} />;
+function AppMobileGuard({ children }) {
+  const isMobile = useIsMobile();
+  if (isMobile) return <MobileBlockScreen />;
+  return children;
 }
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<MainFlow />} />
+        <Route path="/" element={<AgentScreen />} />
+
+        {/* New inverted /spy flow (T21 state machine) */}
+        <Route path="/spy" element={<SpyFlowScreen />} />
+        <Route path="/spy/*" element={<SpyFlowScreen />} />
+
         <Route path="/login" element={<LoginScreen />} />
-        <Route path="/spy" element={<SpyFlow />} />
-        <Route path="/app" element={<DashboardLayout />}>
+
+        {/* Logged-in area — mobile-guarded (extension only runs on desktop) */}
+        <Route
+          path="/app"
+          element={
+            <AppMobileGuard>
+              <DashboardLayout />
+            </AppMobileGuard>
+          }
+        >
           <Route index element={<Navigate to="dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="reports" element={<ReportsListPage />} />
           <Route path="reports/:id" element={<ReportDetailPage />} />
+          <Route path="reports/latest" element={<ReportDetailPage />} />
           <Route path="whatsapp" element={<WhatsAppPage />} />
-          <Route path="connect" element={<ConnectScreen />} />
         </Route>
+
+        {/* Legacy redirects — antigas standalone screens viram parte do /spy flow */}
+        <Route path="/qr" element={<Navigate to="/spy" replace />} />
+        <Route path="/lead-form" element={<Navigate to="/spy" replace />} />
+        <Route path="/connect" element={<Navigate to="/spy" replace />} />
+
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   );

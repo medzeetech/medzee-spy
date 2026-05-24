@@ -1,0 +1,30 @@
+{
+  "name": "medzee-spy-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chrome extension that reads WhatsApp Web for Medzee Spy commercial analysis",
+  "scripts": {
+    "build:icons": "node scripts/build-icons.mjs",
+    "build:wa-collector": "vite build --config vite.wa-collector.config.ts",
+    "build": "npm run build:icons && npm run build:wa-collector && vite build",
+    "dev": "vite build --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0-beta.28",
+    "@types/chrome": "^0.0.270",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sharp": "^0.34.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "@wppconnect/wa-js": "^4.0.0"
+  }
+}

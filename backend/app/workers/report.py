@@ -44,6 +44,7 @@ from app.modules.reports.prompts import (
 from app.modules.reports.sampling import sample_conversations
 from app.modules.reports.schemas import (
     BenchmarkMetric,
+    ExtractedPayload,
     FAQ,
     FunnelStage,
     HeatmapPeriod,
@@ -53,7 +54,6 @@ from app.modules.reports.schemas import (
     ResponseTimeBucket,
     SentimentSlice,
 )
-from app.modules.whatsapp.schemas import ExtractedPayload
 
 logger = logging.getLogger(__name__)
 

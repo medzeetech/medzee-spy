@@ -21,7 +21,6 @@ class SignupRequest(BaseModel):
     phone: str = Field(min_length=10, max_length=20)
     password: str = Field(min_length=6, max_length=128)
     ticket_medio: float | None = Field(default=None, ge=0)
-    whatsapp_session_id: UUID | None = None
 
     @field_validator("name", "phone")
     @classmethod
@@ -67,8 +66,10 @@ class UserPayload(BaseModel):
 class SignupResponse(BaseModel):
     user: UserPayload
     session: SessionPayload
-    report_pending: bool = False
-    session_warning: str | None = None
+    # F8 / CHX-01: short-lived JWT the frontend hands to the Chrome
+    # extension on first install. Always present — the extension flow is
+    # the default and emitting an unused token costs nothing.
+    extension_pairing_token: str
 
 
 class LoginResponse(BaseModel):

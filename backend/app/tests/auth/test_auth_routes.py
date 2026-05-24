@@ -112,8 +112,7 @@ def fake_service() -> MagicMock:
         return_value=SignupResponse(
             user=_user_payload(),
             session=_session_payload(),
-            report_pending=False,
-            session_warning=None,
+            extension_pairing_token="ext-pairing-tok-test",
         ),
     )
     svc.login = AsyncMock(
@@ -164,8 +163,9 @@ def test_post_signup_happy_path(client: TestClient, fake_service: MagicMock) -> 
     assert data["session"]["refresh_token"] == "refresh_tok_test"
     assert data["session"]["expires_in"] == 3600
     assert data["session"]["token_type"] == "bearer"
-    assert data["report_pending"] is False
-    assert data["session_warning"] is None
+    # F8 / CHX-01 — signup envelope must surface the pairing JWT so the
+    # frontend can hand it off to the Chrome extension.
+    assert data["extension_pairing_token"] == "ext-pairing-tok-test"
     fake_service.signup.assert_awaited_once()
 
 
@@ -177,7 +177,7 @@ def test_post_signup_invalid_body_422(client: TestClient, fake_service: MagicMoc
     detail = response.json()["detail"]
     assert isinstance(detail, list) and detail, "expected non-empty pydantic error list"
     missing_fields = {tuple(err["loc"][-1:])[0] for err in detail}
-    # name/email/phone/password are required; ticket_medio + whatsapp_session_id optional.
+    # name/email/phone/password are required; ticket_medio is optional.
     assert {"name", "email", "phone", "password"}.issubset(missing_fields)
     fake_service.signup.assert_not_awaited()
 

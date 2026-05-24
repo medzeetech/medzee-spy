@@ -1,9 +1,9 @@
 """Persistence repository for ``medzee_spy.captured_messages``.
 
 All operations use the Supabase **service_role** admin client. Captured
-messages are written by the F4 ingestion worker before any user-facing
-auth context is in play (the webhook handler runs server-to-server from
-uazapi), so RLS is bypassed at this layer. Read paths exposed to the API
+messages are written by the F8 extension ingest endpoint (authenticated
+with a refresh-token-derived access token), so RLS is bypassed at this
+layer for efficient bulk insert. Read paths exposed to the API
 (``query_window_for_user``, ``stats_for_user``) defensively filter by
 ``user_id`` even though RLS already scopes ownership.
 
@@ -19,8 +19,8 @@ Dedup strategy:
 
 The table has a partial unique index on
 ``(whatsapp_session_id, raw_message_id) WHERE raw_message_id IS NOT NULL``
-so that the uazapi webhook can be replayed (at-least-once delivery) without
-producing duplicate rows. :func:`insert_many` uses PostgREST's
+so that the extension ingest endpoint can be retried (at-least-once delivery)
+without producing duplicate rows. :func:`insert_many` uses PostgREST's
 ``upsert(..., on_conflict='whatsapp_session_id,raw_message_id',
 ignore_duplicates=True)`` — postgrest 0.17.x supports this exact signature
 (verified via vendor inspection). With ``ignore_duplicates=True`` PostgREST
@@ -88,6 +88,7 @@ def _serialize(item: CapturedMessageInsert) -> dict[str, Any]:
         "message_type": item.message_type,
         "text": item.text,
         "raw_message_id": item.raw_message_id,
+        "source": item.source,
     }
 
 
@@ -101,15 +102,15 @@ async def insert_many(items: list[CapturedMessageInsert]) -> int:
     ``ux_captured_messages_dedup`` é **partial** (``WHERE raw_message_id IS
     NOT NULL``) e PostgREST não consegue referenciá-lo via
     ``on_conflict=<cols>`` — só por nome de constraint normal. Resultado:
-    TODO insert via webhook quebrava → ``captured_messages`` ficava vazia.
+    TODO insert via ingest quebrava → ``captured_messages`` ficava vazia.
 
     Nova estratégia:
         1. **Dedup batch em Python** por ``(whatsapp_session_id,
-           raw_message_id)`` — evita duplicatas dentro do mesmo webhook.
+           raw_message_id)`` — evita duplicatas dentro do mesmo batch.
         2. **Plain INSERT** (sem on_conflict).
         3. Em ``unique_violation`` (code 23505) — retry one-by-one
            pulando os que conflitam (cobre at-least-once cross-batch
-           do webhook uazapi).
+           do extension ingest).
 
     Empty input é no-op e retorna 0 sem hit no Supabase.
     """
@@ -121,8 +122,8 @@ async def insert_many(items: list[CapturedMessageInsert]) -> int:
         )
         return 0
 
-    # 1. Dedup em memória — uazapi webhook pode mandar a mesma msg 2x
-    # no mesmo batch (raro mas observado em paid).
+    # 1. Dedup em memória — extension ingest pode reenviar a mesma msg 2x
+    # no mesmo batch em caso de retry de rede.
     seen: set[tuple[str, str]] = set()
     unique_items: list[CapturedMessageInsert] = []
     for it in items:

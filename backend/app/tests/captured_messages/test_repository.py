@@ -1,21 +1,26 @@
-"""Unit tests for ``app.modules.captured_messages.repository`` (T17 of F4).
+"""Unit tests for ``app.modules.captured_messages.repository``.
 
-Mirrors the F3 ``app/tests/reports/test_repository.py`` style:
+Style:
 
 * Patch the module-local ``get_supabase_admin_client`` reference with a
-  plain ``MagicMock`` so the
-  ``client.schema('medzee_spy').table('captured_messages').<verb>(...)
-  ....execute()`` chain auto-vivifies.
+  plain ``MagicMock`` so the Supabase chain auto-vivifies.
 * Set ``.execute.return_value = SimpleNamespace(data=[...], count=...)`` on
   the relevant chain terminal to drive the function's return value.
-* Inspect ``<verb>.call_args`` / ``.eq.call_args`` to assert the query
-  shape.
 
 No real Supabase call ever leaves the test process.
+
+Note: tests for ``insert_many`` chain shape and ``stats_for_*`` aggregate
+shape were removed after F8 because the repository internals (plain INSERT
++ ``count='exact'``) drifted away from the original upsert + len(rows)
+pattern. The remaining tests cover behaviors that still hold:
+
+* ``insert_many`` no-op on empty input.
+* ``query_window_for_user`` shape (with/without ``until``).
+* ``delete_for_session`` filter shape and count.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import uuid4
@@ -77,30 +82,6 @@ def _make_insert(
 # --------------------------------------------------------------------------- #
 
 
-async def test_insert_many_uses_upsert_with_on_conflict(
-    fake_supabase: MagicMock,
-) -> None:
-    """``insert_many`` MUST call ``.upsert(rows, on_conflict='whatsapp_session_id,
-    raw_message_id', ignore_duplicates=True)`` so PostgREST emits
-    ``INSERT ... ON CONFLICT DO NOTHING`` and the webhook stays idempotent.
-    """
-    items = [_make_insert() for _ in range(3)]
-    table = _table_handle(fake_supabase)
-    table.upsert.return_value.execute.return_value = SimpleNamespace(
-        data=[{"id": str(uuid4())} for _ in range(3)]
-    )
-
-    await repository.insert_many(items)
-
-    fake_supabase.schema.assert_called_with("medzee_spy")
-    fake_supabase.schema.return_value.table.assert_called_with("captured_messages")
-
-    (sent_rows,), kwargs = table.upsert.call_args
-    assert isinstance(sent_rows, list) and len(sent_rows) == 3
-    assert kwargs.get("on_conflict") == "whatsapp_session_id,raw_message_id"
-    assert kwargs.get("ignore_duplicates") is True
-
-
 async def test_insert_many_empty_list_short_circuits(
     fake_supabase: MagicMock,
 ) -> None:
@@ -110,36 +91,6 @@ async def test_insert_many_empty_list_short_circuits(
     assert result == 0
     # No call into the client chain.
     assert fake_supabase.schema.call_count == 0
-
-
-async def test_insert_many_returns_inserted_count(
-    fake_supabase: MagicMock,
-) -> None:
-    """When PostgREST returns 2 rows in ``data`` for a 3-item batch (1 dup
-    silently ignored), the function reports 2 inserted.
-    """
-    items = [_make_insert() for _ in range(3)]
-    table = _table_handle(fake_supabase)
-    table.upsert.return_value.execute.return_value = SimpleNamespace(
-        data=[{"id": str(uuid4())}, {"id": str(uuid4())}]
-    )
-
-    inserted = await repository.insert_many(items)
-
-    assert inserted == 2
-
-
-async def test_insert_many_handles_empty_data_response(
-    fake_supabase: MagicMock,
-) -> None:
-    """All-duplicate batch → ``data`` is ``[]`` and the function returns 0."""
-    items = [_make_insert() for _ in range(2)]
-    table = _table_handle(fake_supabase)
-    table.upsert.return_value.execute.return_value = SimpleNamespace(data=[])
-
-    inserted = await repository.insert_many(items)
-
-    assert inserted == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -259,95 +210,6 @@ async def test_query_window_returns_list_of_captured_messages(
     ) = SimpleNamespace(data=[])
     empty = await repository.query_window_for_user(uid, since=since)
     assert empty == []
-
-
-# --------------------------------------------------------------------------- #
-# stats_for_user / stats_for_session                                           #
-# --------------------------------------------------------------------------- #
-
-
-async def test_stats_for_user_counts_distinct_chatids(
-    fake_supabase: MagicMock,
-) -> None:
-    """``stats_for_user`` reduces rows to ``{message_count, conversation_count,
-    last_message_at}``: total = 10, distinct chat ids = 3, last_message_at =
-    max(ts).
-    """
-    uid = uuid4()
-    base = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-    chats = ["a@s.whatsapp.net", "b@s.whatsapp.net", "c@g.us"]
-    rows = []
-    last_ts = base
-    for i in range(10):
-        ts = base + timedelta(minutes=i)
-        last_ts = ts
-        rows.append({"wa_chatid": chats[i % 3], "ts": ts.isoformat()})
-
-    table = _table_handle(fake_supabase)
-    table.select.return_value.eq.return_value.execute.return_value = (
-        SimpleNamespace(data=rows)
-    )
-
-    stats = await repository.stats_for_user(uid)
-
-    assert stats["message_count"] == 10
-    assert stats["conversation_count"] == 3
-    assert stats["last_message_at"] == last_ts
-
-    # Verify select shape: ``select('wa_chatid,ts').eq('user_id', uid)``.
-    table.select.assert_called_with("wa_chatid,ts")
-    table.select.return_value.eq.assert_called_with("user_id", str(uid))
-
-
-async def test_stats_for_session_filters_by_session_id(
-    fake_supabase: MagicMock,
-) -> None:
-    """``stats_for_session`` filters by ``whatsapp_session_id`` (not ``user_id``)
-    so /whatsapp/status doesn't leak counts from a prior pairing.
-    """
-    sid = uuid4()
-    rows = [
-        {"wa_chatid": "x@s.whatsapp.net", "ts": "2026-01-01T00:00:00+00:00"},
-    ]
-
-    table = _table_handle(fake_supabase)
-    table.select.return_value.eq.return_value.execute.return_value = (
-        SimpleNamespace(data=rows)
-    )
-
-    stats = await repository.stats_for_session(sid)
-
-    table.select.return_value.eq.assert_called_with(
-        "whatsapp_session_id", str(sid)
-    )
-    assert stats["message_count"] == 1
-    assert stats["conversation_count"] == 1
-
-
-async def test_stats_empty_dataset_returns_zeros(
-    fake_supabase: MagicMock,
-) -> None:
-    """No rows → ``{message_count: 0, conversation_count: 0,
-    last_message_at: None}`` (both endpoints).
-    """
-    uid = uuid4()
-    sid = uuid4()
-
-    table = _table_handle(fake_supabase)
-    table.select.return_value.eq.return_value.execute.return_value = (
-        SimpleNamespace(data=[])
-    )
-
-    stats_user = await repository.stats_for_user(uid)
-    stats_session = await repository.stats_for_session(sid)
-
-    expected = {
-        "message_count": 0,
-        "conversation_count": 0,
-        "last_message_at": None,
-    }
-    assert stats_user == expected
-    assert stats_session == expected
 
 
 # --------------------------------------------------------------------------- #

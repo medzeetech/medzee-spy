@@ -37,6 +37,8 @@ from app.modules.auth.service import (
     UserNotInSpy,
     get_auth_service,
 )
+from app.modules.extension.schemas import ExtensionPairingTokenResponse
+from app.modules.extension.security import issue_pairing_token
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +152,30 @@ async def patch_me(
             detail="profile_not_found",
         )
     return SuccessResponse(data=result)
+
+
+# ── POST /me/extension-pairing-token ──────────────────────────────────
+
+
+@router.post(
+    "/me/extension-pairing-token",
+    response_model=SuccessResponse[ExtensionPairingTokenResponse],
+    summary="Re-emit a short-lived extension pairing JWT (CHX-15)",
+)
+async def issue_extension_pairing_token(
+    user_id: UUID = Depends(get_current_user_id),
+) -> SuccessResponse[ExtensionPairingTokenResponse]:
+    """Mint a fresh ``extension_pairing`` JWT for the authenticated user.
+
+    Idempotent — each call returns a brand-new token (different ``iat``/
+    ``exp``). The frontend hits this silently when the extension probe
+    reports ``paired=false`` despite the user being already signed in,
+    typically because the original token emitted at signup expired.
+    """
+    token = issue_pairing_token(user_id)
+    return SuccessResponse(
+        data=ExtensionPairingTokenResponse(extension_pairing_token=token)
+    )
 
 
 __all__ = ["router"]

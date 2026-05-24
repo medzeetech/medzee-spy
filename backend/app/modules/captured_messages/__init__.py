@@ -1,12 +1,11 @@
-"""Captured messages module (F4 forward-capture).
+"""Captured messages module (F4 forward-capture, F8 extension cutover).
 
-Persists WhatsApp messages that arrive via uazapi webhook so on-demand
-report generation can read from DB instead of needing /chat/find history
-pull (which doesn't work on uazapi free tier).
+Persists WhatsApp messages that arrive via the Chrome extension ingest
+endpoint (``POST /api/extension/ingest``) so on-demand report generation
+can read from DB.
 
-TTL: 30 days after the linked ``whatsapp_session`` disconnects
-(see ``workers/ttl_cleanup.py``). Encrypted at rest by Supabase
-storage; RLS owner-only for reads.
-
-D4 of STATE.md was explicitly revoked for this module — see F4-21.
+TTL: rolling 30 days — any captured row older than
+``CAPTURED_MESSAGES_TTL_DAYS`` is hard-deleted by the background worker in
+``app/workers/ttl_cleanup.py``. Encrypted at rest by Supabase storage; RLS
+owner-only for reads.
 """

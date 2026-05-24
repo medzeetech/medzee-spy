@@ -1,12 +1,11 @@
 """Shared fixtures for auth module tests (F2).
 
-Mirrors the F1 (whatsapp) test pattern: MagicMock-spec'd Supabase admin client,
-factory-style monkeypatching of the client getter, and AsyncMock-based
-monkeypatching of the repository functions. Fixtures avoid importing the
-auth.repository module at conftest-collection time — instead they patch by
-dotted string path inside the fixture body, which delays attribute resolution
-until the fixture is requested by a test. This lets the conftest co-exist with
-sibling agents that may still be authoring ``app/modules/auth/repository.py``.
+MagicMock-spec'd Supabase admin client, factory-style monkeypatching of the
+client getter, and AsyncMock-based monkeypatching of the repository functions.
+
+Fixtures avoid importing the auth.repository module at conftest-collection
+time — they patch by dotted string path inside the fixture body, which delays
+attribute resolution until the fixture is requested by a test.
 
 The repository return shape for ``get_profile`` mirrors the columns in
 ``medzee_spy.users_profile`` (per design § 6) so service-layer tests can pass
@@ -16,16 +15,27 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from supabase import Client
 
+from app.core.config import settings
 from app.modules.auth.schemas import SignupRequest
 
 
 # Stable test UUID — keeps assertions deterministic across runs.
 TEST_USER_ID = UUID("11111111-1111-1111-1111-111111111111")
+
+# F8: signup now emits an extension_pairing_token via
+# ``app.modules.extension.security.issue_pairing_token``, which requires
+# a non-empty ``SUPABASE_JWT_SECRET``. Autouse so every auth test inherits.
+_TEST_JWT_SECRET = "test-jwt-secret-auth-conftest-0123456789"
+
+
+@pytest.fixture(autouse=True)
+def _configure_jwt_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "SUPABASE_JWT_SECRET", _TEST_JWT_SECRET)
 
 
 # ─── Supabase admin client ─────────────────────────────────────────────
@@ -169,41 +179,6 @@ def fake_repository(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     )
 
 
-# ─── WhatsApp service (cross-module dependency for signup) ─────────────
-
-
-@pytest.fixture
-def fake_whatsapp_service(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """Patch ``app.modules.whatsapp.service.get_service`` to return a mock
-    whose ``consume_extracted`` is an ``AsyncMock`` resolving to a truthy
-    payload.
-
-    The auth service calls into the whatsapp service at signup-time to attach
-    a pre-auth WhatsApp session to the newly created user. Tests don't care
-    about the wire format here — just that ``consume_extracted`` was awaited
-    with the expected ``session_id`` + ``user_id``.
-    """
-    payload = SimpleNamespace(
-        session_id=uuid4(),
-        user_id=TEST_USER_ID,
-        consumed_at="2026-05-17T00:00:00Z",
-    )
-    service_mock = MagicMock(name="whatsapp_service")
-    service_mock.consume_extracted = AsyncMock(return_value=payload)
-
-    monkeypatch.setattr(
-        "app.modules.whatsapp.service.get_service",
-        lambda: service_mock,
-    )
-    # And the re-imported name inside auth.service, if/when it lands.
-    monkeypatch.setattr(
-        "app.modules.auth.service.get_service",
-        lambda: service_mock,
-        raising=False,
-    )
-    return service_mock
-
-
 # ─── Request factories ─────────────────────────────────────────────────
 
 
@@ -223,7 +198,6 @@ def valid_signup_request():
             "phone": "5511999999999",
             "password": "hunter2",
             "ticket_medio": 250.0,
-            "whatsapp_session_id": None,
         }
         defaults.update(overrides)
         return SignupRequest(**defaults)
