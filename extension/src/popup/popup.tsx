@@ -1,27 +1,25 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { getState, clearState, type MedzeePersistedState } from "../lib/storage.js";
+import { getState, type MedzeePersistedState } from "../lib/storage.js";
+import type {
+  MedzeeRuntimeMessage,
+  MedzeeRuntimeReply,
+} from "../lib/messages.js";
 import "./popup.css";
 
 const EXT_VERSION = chrome.runtime.getManifest().version;
-
-// URLs do app público. Resolvidas em build-time via `VITE_FRONTEND_URL`
-// no `.env`. Pra dev local, setar `VITE_FRONTEND_URL=http://localhost:5173`
-// no .env antes do build. Sem runtime switch — explícito é melhor.
-const FRONTEND_URL =
-  (import.meta as ImportMeta & { env?: Record<string, string | undefined> })
-    .env?.VITE_FRONTEND_URL?.replace(/\/+$/, "") ?? "https://medzee-spy.vercel.app";
-
-const SPY_URL = `${FRONTEND_URL}/spy`;
-const APP_URL = `${FRONTEND_URL}/app/whatsapp`;
+const WA_WEB_URL = "https://web.whatsapp.com/";
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "nunca";
   try {
     const d = new Date(iso);
     return d.toLocaleString("pt-BR", {
-      day: "2-digit", month: "2-digit", year: "numeric",
-      hour: "2-digit", minute: "2-digit",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
     });
   } catch {
     return iso;
@@ -32,13 +30,105 @@ function openTab(url: string): void {
   void chrome.tabs.create({ url });
 }
 
-function StatusBadge({ children, tone }: { children: React.ReactNode; tone: "ok" | "info" | "warn" }) {
+async function sendToSW(message: MedzeeRuntimeMessage): Promise<MedzeeRuntimeReply> {
+  return (await chrome.runtime.sendMessage(message)) as MedzeeRuntimeReply;
+}
+
+function StatusBadge({
+  children,
+  tone,
+}: {
+  children: React.ReactNode;
+  tone: "ok" | "info" | "warn";
+}) {
   return <span className={`badge badge--${tone}`}>{children}</span>;
+}
+
+function LoginForm({ onSuccess }: { onSuccess: () => void }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const onSubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!email || !password || submitting) return;
+      setSubmitting(true);
+      setError(null);
+      try {
+        const reply = await sendToSW({
+          type: "medzee:login",
+          payload: { email: email.trim(), password },
+        });
+        if (reply.type === "medzee:ok") {
+          onSuccess();
+          return;
+        }
+        if (reply.type === "medzee:error") {
+          setError(reply.message ?? "Falha ao entrar");
+        } else {
+          setError("Resposta inesperada do worker");
+        }
+      } catch (err) {
+        setError(`Erro de conexão: ${String(err)}`);
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [email, password, submitting, onSuccess],
+  );
+
+  return (
+    <form className="popup__form" onSubmit={onSubmit}>
+      <StatusBadge tone="warn">Não conectado</StatusBadge>
+      <p className="popup__msg">Entre com sua conta Medzee para coletar.</p>
+      <label className="popup__label">
+        Email
+        <input
+          className="popup__input"
+          type="email"
+          autoComplete="username"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          disabled={submitting}
+          required
+        />
+      </label>
+      <label className="popup__label">
+        Senha
+        <input
+          className="popup__input"
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          disabled={submitting}
+          required
+        />
+      </label>
+      {error && <div className="popup__error">{error}</div>}
+      <button
+        type="submit"
+        className="popup__cta"
+        disabled={submitting || !email || !password}
+      >
+        {submitting ? "Entrando…" : "Entrar"}
+      </button>
+    </form>
+  );
 }
 
 function App() {
   const [state, setState] = useState<MedzeePersistedState | null>(null);
   const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    const s = await getState();
+    setState(s);
+    setLoading(false);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -49,56 +139,99 @@ function App() {
         setLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+
+    // Re-read whenever storage changes (login from another popup instance,
+    // collection progress ticks, etc).
+    const onChange = (
+      changes: { [k: string]: chrome.storage.StorageChange },
+      area: chrome.storage.AreaName,
+    ) => {
+      if (area === "local" && changes["medzee"]) {
+        void refresh();
+      }
+    };
+    chrome.storage.onChanged.addListener(onChange);
+
+    return () => {
+      cancelled = true;
+      chrome.storage.onChanged.removeListener(onChange);
+    };
+  }, [refresh]);
+
+  const onLogout = useCallback(async () => {
+    setActionError(null);
+    try {
+      await sendToSW({ type: "medzee:logout" });
+      await refresh();
+    } catch (err) {
+      setActionError(`Falha ao sair: ${String(err)}`);
+    }
+  }, [refresh]);
+
+  const onStart = useCallback(async () => {
+    setActionError(null);
+    try {
+      const reply = await sendToSW({ type: "medzee:start" });
+      if (reply.type === "medzee:error") {
+        setActionError(reply.message ?? `Erro: ${reply.code}`);
+      }
+    } catch (err) {
+      setActionError(`Erro ao iniciar: ${String(err)}`);
+    }
   }, []);
 
   if (loading || !state) {
     return <div className="popup popup--loading">Carregando…</div>;
   }
 
-  const paired = !!state.refresh_token;
+  const session = state.session;
   const collecting = !!state.collection_in_progress;
   const hasHistory = !!state.last_collection_at;
 
   let body: React.ReactNode;
-  if (!paired) {
-    body = (
-      <>
-        <StatusBadge tone="warn">Não conectado</StatusBadge>
-        <p className="popup__msg">Conecte sua conta Medzee pra analisar seu WhatsApp.</p>
-        <button className="popup__cta" onClick={() => openTab(SPY_URL)}>
-          Conectar agora
-        </button>
-      </>
-    );
+
+  if (!session) {
+    body = <LoginForm onSuccess={refresh} />;
   } else if (collecting && state.collection_in_progress) {
     const cip = state.collection_in_progress;
     body = (
       <>
         <StatusBadge tone="info">Coletando…</StatusBadge>
+        <p className="popup__email-display">{session.email}</p>
         <p className="popup__msg">
           {cip.batches_sent} / {cip.total_batches} batches enviados
         </p>
-        <div className="popup__spinner" aria-label="Coletando">⏳</div>
+        <div className="popup__spinner" aria-label="Coletando">
+          ⏳
+        </div>
       </>
     );
   } else if (hasHistory) {
     body = (
       <>
         <StatusBadge tone="ok">Conectado</StatusBadge>
+        <p className="popup__email-display">{session.email}</p>
         <p className="popup__msg">
-          Última análise: <strong>{state.last_collection_message_count} mensagens</strong><br />
+          Última análise:{" "}
+          <strong>{state.last_collection_message_count} mensagens</strong>
+          <br />
           em {formatDateTime(state.last_collection_at)}
         </p>
-        <button className="popup__cta" onClick={() => openTab(APP_URL)}>
+        {actionError && <div className="popup__error">{actionError}</div>}
+        <button
+          className="popup__cta popup__cta--secondary"
+          onClick={() => openTab(WA_WEB_URL)}
+        >
+          Abrir WhatsApp Web
+        </button>
+        <button className="popup__cta" onClick={onStart}>
           Atualizar análise
         </button>
-        <button className="popup__cta popup__cta--secondary" onClick={async () => {
-          await clearState();
-          const s = await getState();
-          setState(s);
-        }}>
-          Desconectar
+        <button
+          className="popup__cta popup__cta--secondary"
+          onClick={onLogout}
+        >
+          Sair
         </button>
       </>
     );
@@ -106,9 +239,23 @@ function App() {
     body = (
       <>
         <StatusBadge tone="ok">Conectado</StatusBadge>
+        <p className="popup__email-display">{session.email}</p>
         <p className="popup__msg">Última análise: nunca</p>
-        <button className="popup__cta" onClick={() => openTab(APP_URL)}>
+        {actionError && <div className="popup__error">{actionError}</div>}
+        <button
+          className="popup__cta popup__cta--secondary"
+          onClick={() => openTab(WA_WEB_URL)}
+        >
+          Abrir WhatsApp Web
+        </button>
+        <button className="popup__cta" onClick={onStart}>
           Iniciar análise
+        </button>
+        <button
+          className="popup__cta popup__cta--secondary"
+          onClick={onLogout}
+        >
+          Sair
         </button>
       </>
     );

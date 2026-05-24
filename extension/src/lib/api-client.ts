@@ -1,16 +1,17 @@
 /**
  * Fetch wrapper used by the service worker to talk to
- * `/api/extension/*` (F8 / design §4.10).
+ * `/api/auth/*` and `/api/extension/*` (F8 / design §4.10, post-pivot
+ * 2026-05-24).
  *
  * Responsibilities:
- *  - Attach `Authorization: Bearer <refresh_token>` for protected
+ *  - Attach `Authorization: Bearer <access_token>` for protected
  *    endpoints, reading the token from `chrome.storage.local` on every
- *    call (so a token refresh propagates immediately).
+ *    call (so an updated session propagates immediately).
  *  - Retry with exponential backoff (0/1s/3s/9s) on 5xx and on network
  *    errors. 4xx is *not* retried.
  *  - Map well-known status codes to typed errors so the service worker
- *    can react (re-pair on 401, surface "outdated" UI on 409, throttle
- *    on 429).
+ *    can react (clear session on 401, surface "outdated" UI on 409,
+ *    throttle on 429).
  *
  * Backend base URL is resolved in this order:
  *  1. `import.meta.env.VITE_BACKEND_URL` — Vite build-time substitution.
@@ -23,10 +24,9 @@
  */
 import type {
   ExtensionMessageBatch,
-  ExtensionPairRequest,
-  ExtensionPairResponse,
   ExtensionStatusResponse,
   ExtensionTelemetryEventPayload,
+  LoginResponse,
 } from "./messages.js";
 import { getState } from "./storage.js";
 
@@ -36,13 +36,13 @@ const DEFAULT_BACKEND =
 
 // ─── Typed error classes (caught by service-worker switch) ─────────────
 
-/** 401 from a protected endpoint — refresh_token is invalid or expired. */
-export class PairingExpiredError extends Error {
-  readonly code = "pairing_expired";
+/** 401 from a protected endpoint — access_token missing/invalid/expired. */
+export class UnauthorizedError extends Error {
+  readonly code = "unauthorized";
 
-  constructor(message = "pairing expired") {
+  constructor(message = "401 from backend") {
     super(message);
-    this.name = "PairingExpiredError";
+    this.name = "UnauthorizedError";
   }
 }
 
@@ -74,7 +74,7 @@ interface FetchOpts {
   method?: "GET" | "POST";
   body?: unknown;
   headers?: Record<string, string>;
-  /** Attach `Authorization: Bearer <refresh_token>` from storage. */
+  /** Attach `Authorization: Bearer <access_token>` from storage. */
   auth?: boolean;
   /** Sent as `X-Extension-Version` (CHX-14 floor check). */
   extensionVersion?: string;
@@ -103,10 +103,11 @@ async function fetchJson<T>(path: string, opts: FetchOpts = {}): Promise<T> {
 
   if (opts.auth) {
     const state = await getState();
-    if (!state.refresh_token) {
-      throw new PairingExpiredError("no refresh_token in storage");
+    const accessToken = state.session?.access_token;
+    if (!accessToken) {
+      throw new UnauthorizedError("no session in storage");
     }
-    headers["Authorization"] = `Bearer ${state.refresh_token}`;
+    headers["Authorization"] = `Bearer ${accessToken}`;
   }
 
   const init: RequestInit = {
@@ -126,7 +127,7 @@ async function fetchJson<T>(path: string, opts: FetchOpts = {}): Promise<T> {
 
       // Terminal status codes — surface as typed errors, never retry.
       if (res.status === 401) {
-        throw new PairingExpiredError("401 from backend");
+        throw new UnauthorizedError("401 from backend");
       }
       if (res.status === 409) {
         const body = await res.json().catch(() => ({}) as unknown);
@@ -155,11 +156,11 @@ async function fetchJson<T>(path: string, opts: FetchOpts = {}): Promise<T> {
       if (res.status === 204) {
         return undefined as T;
       }
-      return (await res.json()) as T;
+      return unwrapEnvelope<T>(await res.json());
     } catch (e) {
       // Don't swallow typed errors — caller needs to react.
       if (
-        e instanceof PairingExpiredError ||
+        e instanceof UnauthorizedError ||
         e instanceof ExtensionOutdatedError ||
         e instanceof RateLimitedError
       ) {
@@ -171,6 +172,25 @@ async function fetchJson<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   }
 
   throw lastError ?? new Error("unknown fetch failure");
+}
+
+/**
+ * The Medzee backend wraps successful responses in a `SuccessResponse`
+ * envelope: `{ success: true, data: <payload>, ... }`. Some endpoints
+ * (e.g. `/api/extension/messages`) instead return the payload directly.
+ * Detect and unwrap so callers always see the inner shape.
+ */
+function unwrapEnvelope<T>(raw: unknown): T {
+  if (
+    typeof raw === "object" &&
+    raw !== null &&
+    "data" in raw &&
+    "success" in raw &&
+    (raw as { success?: unknown }).success === true
+  ) {
+    return (raw as { data: T }).data;
+  }
+  return raw as T;
 }
 
 /** Pull `{ detail: { message, min_version } }` out of a FastAPI error body. */
@@ -190,17 +210,22 @@ function extractDetail(body: unknown): { message?: string; min_version?: string 
 
 // ─── Public API (one helper per endpoint) ──────────────────────────────
 
-/** `POST /api/extension/pair` — no auth, returns the long-lived refresh token. */
-export async function pair(
-  req: ExtensionPairRequest,
-): Promise<ExtensionPairResponse> {
-  return fetchJson<ExtensionPairResponse>("/api/extension/pair", {
+/**
+ * `POST /api/auth/login` — no auth, returns a Supabase session for the
+ * given credentials. Throws on 401 (invalid email/password) or network
+ * failure.
+ */
+export async function login(
+  email: string,
+  password: string,
+): Promise<LoginResponse> {
+  return fetchJson<LoginResponse>("/api/auth/login", {
     method: "POST",
-    body: req,
+    body: { email, password },
   });
 }
 
-/** `POST /api/extension/messages` — auth: refresh_token, 202 Accepted on success. */
+/** `POST /api/extension/messages` — auth: access_token, 202 Accepted on success. */
 export async function sendBatch(
   batch: ExtensionMessageBatch,
   extensionVersion: string,
@@ -214,7 +239,7 @@ export async function sendBatch(
 }
 
 /**
- * `POST /api/extension/telemetry` — auth: refresh_token, rate-limited 60/min.
+ * `POST /api/extension/telemetry` — auth: access_token, rate-limited 60/min.
  * Returns `void`; the backend response is fire-and-forget for the worker.
  */
 export async function sendTelemetry(
@@ -229,16 +254,9 @@ export async function sendTelemetry(
   });
 }
 
-/**
- * `GET /api/extension/status` — TODO(M3): this endpoint is authenticated
- * via the user's standard session JWT (`get_current_user_id`), which the
- * extension service worker does not hold. The frontend popup-like UI is
- * expected to read state from `chrome.storage.local` instead of calling
- * this helper. Exported only for completeness / future use once we have
- * a JWT-share channel.
- */
+/** `GET /api/extension/status` — auth: access_token. */
 export async function getStatus(): Promise<ExtensionStatusResponse> {
-  // Intentionally `auth: false` — see TODO above. Will 401 until we
-  // wire a user JWT through.
-  return fetchJson<ExtensionStatusResponse>("/api/extension/status");
+  return fetchJson<ExtensionStatusResponse>("/api/extension/status", {
+    auth: true,
+  });
 }
