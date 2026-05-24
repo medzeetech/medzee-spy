@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { getState, type MedzeePersistedState } from "../lib/storage.js";
+import { getState, clearState, type MedzeePersistedState } from "../lib/storage.js";
+import { getStatus, UnauthorizedError } from "../lib/api-client.js";
 import type {
   MedzeeRuntimeMessage,
   MedzeeRuntimeReply,
@@ -70,6 +71,24 @@ function App() {
       if (!cancelled) {
         setState(s);
         setLoading(false);
+      }
+
+      // Valida session contra backend — cobre o caso de session "zumbi"
+      // (user deletado em auth.users mas JWT ainda não expirou). Se 401,
+      // limpa state localmente e a UI re-renderiza pra "Não conectado".
+      if (s.session) {
+        try {
+          await getStatus();
+        } catch (err) {
+          if (cancelled) return;
+          if (err instanceof UnauthorizedError) {
+            // eslint-disable-next-line no-console
+            console.warn("[popup] session zumbi detectada, limpando");
+            await clearState();
+            // chrome.storage.onChanged listener (abaixo) já vai disparar
+            // refresh — não precisa setState aqui.
+          }
+        }
       }
     })();
 
