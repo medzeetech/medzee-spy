@@ -9,7 +9,12 @@ import "./popup.css";
 
 const EXT_VERSION = chrome.runtime.getManifest().version;
 const WA_WEB_URL = "https://web.whatsapp.com/";
-const SITE_URL = "https://medzee-spy.vercel.app";
+
+// Frontend URL baked from VITE_FRONTEND_URL no .env (com fallback prod
+// se o build não tiver o env setado).
+const SITE_URL =
+  (import.meta as ImportMeta & { env?: Record<string, string | undefined> })
+    .env?.VITE_FRONTEND_URL?.replace(/\/+$/, "") ?? "https://medzee-spy.vercel.app";
 const SITE_LOGIN_URL = `${SITE_URL}/login`;
 
 function formatDateTime(iso: string | null): string {
