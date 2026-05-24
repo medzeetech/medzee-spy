@@ -2,7 +2,7 @@
 //
 // Behavior:
 // - Loading: skeleton minimal.
-// - Sem relatórios: empty state CTA → /app/whatsapp.
+// - Sem relatórios: empty state CTA → /app/whatsapp (extensão).
 // - Tem relatórios: cards de métrica usam o último relatório completo;
 //   charts usam os 4 mais recentes ordenados por data ASC.
 //
@@ -10,6 +10,9 @@
 // (já existente). Cada item da lista tem score + message_count + created_at.
 // Pra "Taxa de conversão" e "Tempo 1ª resposta" precisamos do payload
 // completo — buscamos o relatório mais recente via /api/reports/latest.
+//
+// M2: WhatsApp/uazapi telemetry removida do dashboard. A ingestão agora roda
+// pela extensão Chrome — qualquer status "ao vivo" é exibido em /app/whatsapp.
 
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -19,11 +22,9 @@ import {
 } from 'recharts';
 import {
   TrendingUp, TrendingDown, Clock, MessageCircle, Target, Users, FileText,
-  Wifi, Hash,
 } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import { listReports, getReport } from '../../lib/reports.js';
-import { useWhatsappStatus, useUazapiStats } from '../../lib/whatsapp.js';
 
 const PT_MONTH_LABEL = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
@@ -94,173 +95,7 @@ function MetricCard({ label, value, unit, trend, positive, Icon, color }) {
   );
 }
 
-function LiveStatsRow({ chatCount, capturedCount, lastMessageAt }) {
-  // 3 contagens reais do estado WhatsApp:
-  //   - chatCount: uazapi /chat/find totalChatsStats.total_chats (ao vivo)
-  //   - capturedCount: nosso captured_messages.stats_for_session
-  //     (TUDO que o webhook persistiu, soma cumulativa)
-  //   - lastMessageAt: timestamp da última msg recebida via webhook
-  //
-  // uazapi free NÃO retorna total_messages no totalChatsStats — só dá
-  // total/unread por bucket (chats abertos, arquivados, grupos). Por isso
-  // o source de verdade pra "quantas msgs temos" é captured_messages.
-  const lastMsgLabel = formatRelativeShort(lastMessageAt) || '—';
-
-  const cards = [
-    {
-      label: 'Conversas no WhatsApp',
-      value: chatCount.toLocaleString('pt-BR'),
-      Icon: MessageCircle,
-      color: COLORS.wa,
-    },
-    {
-      label: 'Mensagens capturadas',
-      value: capturedCount.toLocaleString('pt-BR'),
-      Icon: Hash,
-      color: COLORS.lavender,
-    },
-    {
-      label: 'Última mensagem',
-      value: lastMsgLabel,
-      Icon: Wifi,
-      color: COLORS.orange,
-    },
-  ];
-  return (
-    <div className="flex flex-wrap" style={{ gap: 14, marginBottom: 14 }}>
-      {cards.map(({ label, value, Icon, color }) => (
-        <div
-          key={label}
-          style={{
-            background: COLORS.paper,
-            border: `1px solid ${COLORS.hairline}`,
-            borderRadius: 16,
-            padding: 20,
-            flex: '1 1 200px',
-          }}
-        >
-          <div className="flex items-center" style={{ gap: 10, marginBottom: 10 }}>
-            <div
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 10,
-                background: `${color}15`,
-                color,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Icon size={16} />
-            </div>
-            <div style={{ fontSize: 12, color: COLORS.inkMute, fontWeight: 600 }}>{label}</div>
-          </div>
-          <div
-            style={{
-              fontSize: 26,
-              fontWeight: 800,
-              color: COLORS.ink,
-              letterSpacing: '-0.02em',
-              lineHeight: 1,
-            }}
-          >
-            {value}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function formatRelativeShort(iso) {
-  if (!iso) return null;
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60_000) return 'agora há pouco';
-  const min = Math.floor(ms / 60_000);
-  if (min < 60) return `há ${min} minuto${min === 1 ? '' : 's'}`;
-  const h = Math.floor(ms / 3_600_000);
-  if (h < 24) return `há ${h} hora${h === 1 ? '' : 's'}`;
-  const d = Math.floor(ms / 86_400_000);
-  if (d < 30) return `há ${d} dia${d === 1 ? '' : 's'}`;
-  return new Date(iso).toLocaleDateString('pt-BR');
-}
-
-function EmptyState({ isConnected, chatCount, capturedCount, dbStatus, lastSeenAt }) {
-  // Diferentes UX baseadas no estado real do DB (não força "/spy" / signup
-  // pra user já autenticado). 4 cenários:
-  //   - isConnected = true → uazapi confirma conexão ativa
-  //   - dbStatus terminal (consumed/disconnected/failed/expired) → já
-  //     conectou antes, sessão terminou — oferece RECONECTAR + mostra
-  //     "última atividade em X" se houver
-  //   - dbStatus = pending → conectando em curso (rare empty state)
-  //   - dbStatus null → nunca conectou
-  const ENDED_STATUSES = new Set(['consumed', 'disconnected', 'failed', 'expired']);
-  const hasEndedSession = !isConnected && dbStatus && ENDED_STATUSES.has(dbStatus);
-  let title;
-  let body;
-  let cta = null;
-
-  if (isConnected) {
-    if (chatCount > 0) {
-      title = 'WhatsApp conectado — pronto pra primeiro relatório';
-      body = (
-        <>
-          Detectadas <strong>{chatCount.toLocaleString('pt-BR')}</strong> conversas
-          {capturedCount > 0 && (
-            <> e <strong>{capturedCount.toLocaleString('pt-BR')}</strong> mensagens já capturadas localmente</>
-          )}.
-          Gere o primeiro diagnóstico agora — o relatório puxa o histórico
-          direto do WhatsApp em até 3min.
-        </>
-      );
-      cta = { label: 'Gerar primeiro relatório', to: '/app/reports' };
-    } else {
-      title = 'WhatsApp conectado — aguardando dados';
-      body = (
-        <>
-          A análise precisa de pelo menos uma conversa. Continue usando o WhatsApp
-          da clínica normalmente — assim que tiver atividade, geramos o relatório.
-        </>
-      );
-      cta = { label: 'Ver status da conexão', to: '/app/whatsapp' };
-    }
-  } else if (hasEndedSession) {
-    const when = formatRelativeShort(lastSeenAt);
-    title = 'Sessão WhatsApp encerrada';
-    body = (
-      <>
-        Sua última conexão {when ? <>terminou <strong>{when}</strong></> : 'foi encerrada'}.
-        {capturedCount > 0 && (
-          <>
-            {' '}Temos <strong>{capturedCount.toLocaleString('pt-BR')}</strong> mensagens guardadas localmente
-            do período anterior.
-          </>
-        )}
-        {' '}Reconecte pra continuar coletando.
-      </>
-    );
-    cta = { label: 'Reconectar WhatsApp', to: '/app/connect' };
-  } else if (dbStatus === 'pending') {
-    title = 'Conectando ao WhatsApp…';
-    body = (
-      <>
-        Escaneie o QR Code em <strong>Conexão WhatsApp</strong> pra finalizar
-        a conexão.
-      </>
-    );
-    cta = { label: 'Continuar conexão', to: '/app/connect' };
-  } else {
-    title = 'Conecte seu WhatsApp pra começar';
-    body = (
-      <>
-        Conecte o WhatsApp da clínica em "Conexão WhatsApp" pra começar a
-        coletar conversas. Depois, gere um relatório quando quiser.
-      </>
-    );
-    cta = { label: 'Conectar WhatsApp', to: '/app/connect' };
-  }
-
+function EmptyState() {
   return (
     <div
       style={{
@@ -297,7 +132,7 @@ function EmptyState({ isConnected, chatCount, capturedCount, dbStatus, lastSeenA
           letterSpacing: '-0.02em',
         }}
       >
-        {title}
+        Sem relatórios ainda
       </h2>
       <p
         style={{
@@ -311,29 +146,27 @@ function EmptyState({ isConnected, chatCount, capturedCount, dbStatus, lastSeenA
           marginRight: 'auto',
         }}
       >
-        {body}
+        Gere sua primeira análise rodando a extensão Medzee Spy no WhatsApp Web.
       </p>
-      {cta && (
-        <Link
-          to={cta.to}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '12px 22px',
-            borderRadius: 12,
-            background: `linear-gradient(135deg, ${COLORS.orange}, ${COLORS.orangeDeep})`,
-            color: COLORS.cream,
-            fontSize: 14,
-            fontWeight: 700,
-            textDecoration: 'none',
-            fontFamily: "'Red Hat Display', sans-serif",
-            boxShadow: '0 6px 20px -6px rgba(255,107,53,0.4)',
-          }}
-        >
-          {cta.label}
-        </Link>
-      )}
+      <Link
+        to="/app/whatsapp"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '12px 22px',
+          borderRadius: 12,
+          background: `linear-gradient(135deg, ${COLORS.orange}, ${COLORS.orangeDeep})`,
+          color: COLORS.cream,
+          fontSize: 14,
+          fontWeight: 700,
+          textDecoration: 'none',
+          fontFamily: "'Red Hat Display', sans-serif",
+          boxShadow: '0 6px 20px -6px rgba(255,107,53,0.4)',
+        }}
+      >
+        Ver extensão
+      </Link>
     </div>
   );
 }
@@ -362,23 +195,6 @@ function ChartCard({ title, subtitle, children, fullWidth }) {
 
 export default function DashboardPage() {
   const [state, setState] = useState({ loading: true, reports: [], latest: null, error: null });
-  // Duas fontes de verdade:
-  //   - useWhatsappStatus: nosso DB (status row + captured_messages count)
-  //   - useUazapiStats:    /chat/find ao vivo (uazapi confirma se WhatsApp
-  //                        tá pareado de verdade, independente do nosso DB)
-  // Se uazapi-stats responde com chat_count > 0, o usuário ESTÁ conectado
-  // mesmo que nosso DB esteja atrasado/em pending. Isso resolve o sintoma
-  // "WhatsApp conectado mas dashboard diz não conectado".
-  const { status: waStatus } = useWhatsappStatus();
-  const uazapiStats = useUazapiStats({ enabled: true });
-  const capturedCount = waStatus?.message_count ?? 0;
-  const chatCount = uazapiStats?.stats?.chat_count ?? 0;
-  const lastMessageAt = waStatus?.last_message_at ?? null;
-  const dbConnected = Boolean(waStatus?.connected);
-  const uazapiConnected = chatCount > 0;
-  const isConnected = dbConnected || uazapiConnected;
-  const dbStatus = waStatus?.db_status ?? null;
-  const lastSeenAt = waStatus?.last_seen_at ?? null;
 
   useEffect(() => {
     let alive = true;
@@ -454,29 +270,11 @@ export default function DashboardPage() {
     </div>
   );
 
-  // LiveStatsRow renderiza SEMPRE que o user tem WhatsApp conectado —
-  // independente de ter relatórios completed. Garante que o dashboard
-  // sempre reflete o estado real do WhatsApp (conversas + msgs capturadas).
-  const liveStatsRow = isConnected ? (
-    <LiveStatsRow
-      chatCount={chatCount}
-      capturedCount={capturedCount}
-      lastMessageAt={lastMessageAt}
-    />
-  ) : null;
-
   if (completedReports.length === 0) {
     return (
       <div style={{ maxWidth: 900 }}>
         {header}
-        {liveStatsRow}
-        <EmptyState
-          isConnected={isConnected}
-          chatCount={chatCount}
-          capturedCount={capturedCount}
-          dbStatus={dbStatus}
-          lastSeenAt={lastSeenAt}
-        />
+        <EmptyState />
       </div>
     );
   }
@@ -556,7 +354,6 @@ export default function DashboardPage() {
   return (
     <div style={{ maxWidth: 900 }}>
       {header}
-      {liveStatsRow}
 
       {isInsufficient && (
         <div

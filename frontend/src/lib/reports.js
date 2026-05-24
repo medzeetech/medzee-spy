@@ -33,6 +33,13 @@ const MAX_TOTAL_MS = 8 * 60_000;
 const MAX_404_MS = 60_000;
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'unauthorized']);
 
+// M2: durante a janela de tolerância de 404, surface um status 'not_found'
+// (em vez de 'pending') pra UI distinguir "ainda não chegou relatório
+// nenhum" de "report row existe mas worker tá rodando". Isso evita o bug
+// onde /app/reports/latest mostrava progresso falso pra usuário recém-pareado
+// que ainda nem rodou a extensão. O polling continua tickando — assim que
+// a row aparecer no backend, a próxima requisição volta com status real.
+
 export function useReportPolling(idOrLatest = 'latest') {
   const [state, setState] = useState({
     status: 'pending',
@@ -137,10 +144,12 @@ export function useReportPolling(idOrLatest = 'latest') {
         }
 
         // 404 — worker ainda não criou a row. Aceita até MAX_404_MS.
+        // Surface 'not_found' (não 'pending') pra UI mostrar empty state
+        // honesto em vez de progresso fake. Polling continua.
         if (httpStatus === 404 && elapsed < MAX_404_MS) {
           setSafe((prev) => ({
             ...prev,
-            status: 'pending',
+            status: 'not_found',
             elapsedMs: elapsed,
           }));
           schedule();
