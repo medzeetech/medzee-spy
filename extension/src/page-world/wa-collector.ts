@@ -129,24 +129,44 @@ function mapMessage(m: WPPMessage, chat: WPPChat): ExtensionMessage | null {
 async function waitForWPP(maxMs = 60_000): Promise<WPPGlobal> {
   mlog("waitForWPP: aguardando window.WPP…", { window_has_WPP: !!window.WPP });
   const start = Date.now();
+  let dumped = false;
+
   while (Date.now() - start < maxMs) {
-    const wpp = window.WPP;
-    if (wpp?.webpack?.isReady) {
-      mlog("waitForWPP: WPP.webpack.isReady=true ✓", { elapsed_ms: Date.now() - start });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const wpp = window.WPP as any;
+
+    // Dump da estrutura na 1ª iteração — tira foto do que wa-js v4 expõe.
+    if (!dumped && wpp && typeof wpp === "object") {
+      dumped = true;
+      mlog("waitForWPP: WPP root keys", { keys: Object.keys(wpp) });
+      mlog("waitForWPP: WPP ready flags", {
+        WPP_isReady: wpp.isReady,
+        WPP_isFullReady: wpp.isFullReady,
+        WPP_isInjected: wpp.isInjected,
+        WPP_webpack_keys: wpp.webpack ? Object.keys(wpp.webpack) : null,
+        WPP_webpack_isReady: wpp.webpack?.isReady,
+        WPP_webpack_isInjected: wpp.webpack?.isInjected,
+        WPP_webpack_onReady_type: typeof wpp.webpack?.onReady,
+        WPP_has_on: typeof wpp.on === "function",
+        WPP_has_onReady: typeof wpp.onReady,
+      });
+    }
+
+    // Múltiplas checagens — pega qualquer formato conhecido de "ready".
+    const isReady =
+      wpp?.isReady === true ||
+      wpp?.isFullReady === true ||
+      wpp?.webpack?.isReady === true ||
+      wpp?.webpack?.isFullReady === true;
+
+    if (isReady) {
+      mlog("waitForWPP: READY ✓", { elapsed_ms: Date.now() - start });
       return wpp;
     }
-    if (wpp?.webpack?.onReady) {
-      mlog("waitForWPP: chamando WPP.webpack.onReady(...)…");
-      await new Promise<void>((resolve) => {
-        wpp.webpack!.onReady(resolve);
-      });
-      if (window.WPP) {
-        mlog("waitForWPP: onReady resolveu ✓", { elapsed_ms: Date.now() - start });
-        return window.WPP;
-      }
-    }
+
     await new Promise((r) => setTimeout(r, 500));
   }
+
   mlog("waitForWPP: TIMEOUT ✗", { elapsed_ms: maxMs });
   throw new Error("WPP not ready within timeout");
 }
