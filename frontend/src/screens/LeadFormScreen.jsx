@@ -46,6 +46,35 @@ function maskCurrency(value) {
   return num.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
+// Traduz mensagens do backend (que ecoam o Supabase Auth) pra PT-BR
+// explicativo. Quando não há mapeamento, devolve o detail bruto — pra
+// usuário e operador nunca verem "Tente novamente." vazio. Inclui dica
+// de ação quando dá pra apontar a causa (ex: User not allowed = key
+// de service role inválida ou signup desativado).
+function humanizeSignupError(err) {
+  const raw = String(err?.detail || err?.body?.detail || err?.message || '').trim();
+  if (!raw) return 'Falha ao criar conta — servidor não retornou motivo.';
+  const map = [
+    [
+      /user not allowed/i,
+      'Cadastros estão bloqueados no servidor. Verifique no Supabase Dashboard se "Allow new users to sign up" está ligado e se a SUPABASE_SERVICE_ROLE_KEY no Railway é a service_role (não a anon).',
+    ],
+    [
+      /user already (registered|exists)|already been registered/i,
+      'Este e-mail já tem cadastro. Use "Entrar" na tela inicial.',
+    ],
+    [/password.*at least|password.*characters/i, 'A senha precisa ter no mínimo 6 caracteres.'],
+    [/invalid email/i, 'E-mail inválido.'],
+    [/database error/i, 'Erro no banco ao criar usuário (provável trigger/constraint). Avise o suporte com este horário.'],
+    [/signup.*disabled|signups not allowed/i, 'Os cadastros estão temporariamente desativados.'],
+    [/rate limit|too many/i, 'Muitas tentativas — aguarde 1 minuto e tente novamente.'],
+  ];
+  for (const [pat, msg] of map) {
+    if (pat.test(raw)) return msg;
+  }
+  return `Não foi possível criar a conta: ${raw}`;
+}
+
 export default function LeadFormScreen({ onSubmit, onSignupComplete, showTicketMedio = false, whatsappSessionId = null }) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
@@ -158,11 +187,16 @@ export default function LeadFormScreen({ onSubmit, onSignupComplete, showTicketM
           });
           setFieldErrors(next);
         } else {
-          setError('Falha ao criar conta. Tente novamente.');
+          setError(humanizeSignupError(err));
         }
         return;
       }
-      setError('Falha ao criar conta. Tente novamente.');
+      setError(humanizeSignupError(err));
+      console.error('[signup] erro do backend', {
+        status: err?.status,
+        detail: err?.detail,
+        body: err?.body,
+      });
     } finally {
       setSubmitting(false);
     }
