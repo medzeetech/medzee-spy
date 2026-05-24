@@ -5,17 +5,15 @@ import "./popup.css";
 
 const EXT_VERSION = chrome.runtime.getManifest().version;
 
-// URLs do app público. Em build-time, `VITE_FRONTEND_URL` no .env override
-// o default. Dev local (`Load unpacked` sem .env) cai no localhost.
+// URLs do app público. Resolvidas em build-time via `VITE_FRONTEND_URL`
+// no `.env`. Pra dev local, setar `VITE_FRONTEND_URL=http://localhost:5173`
+// no .env antes do build. Sem runtime switch — explícito é melhor.
 const FRONTEND_URL =
   (import.meta as ImportMeta & { env?: Record<string, string | undefined> })
     .env?.VITE_FRONTEND_URL?.replace(/\/+$/, "") ?? "https://medzee-spy.vercel.app";
-const FRONTEND_DEV_URL = "http://localhost:5173";
 
 const SPY_URL = `${FRONTEND_URL}/spy`;
 const APP_URL = `${FRONTEND_URL}/app/whatsapp`;
-const DEV_SPY_URL = `${FRONTEND_DEV_URL}/spy`;
-const DEV_APP_URL = `${FRONTEND_DEV_URL}/app/whatsapp`;
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "nunca";
@@ -28,12 +26,6 @@ function formatDateTime(iso: string | null): string {
   } catch {
     return iso;
   }
-}
-
-function pickUrl(prodUrl: string, devUrl: string): string {
-  // Heuristic: in unpacked dev mode, target localhost. Otherwise prod.
-  // chrome.runtime.id is a 32-char hex string for unpacked, longer for store.
-  return chrome.runtime.id.length === 32 ? devUrl : prodUrl;
 }
 
 function openTab(url: string): void {
@@ -74,7 +66,7 @@ function App() {
       <>
         <StatusBadge tone="warn">Não conectado</StatusBadge>
         <p className="popup__msg">Conecte sua conta Medzee pra analisar seu WhatsApp.</p>
-        <button className="popup__cta" onClick={() => openTab(pickUrl(SPY_URL, DEV_SPY_URL))}>
+        <button className="popup__cta" onClick={() => openTab(SPY_URL)}>
           Conectar agora
         </button>
       </>
@@ -98,7 +90,7 @@ function App() {
           Última análise: <strong>{state.last_collection_message_count} mensagens</strong><br />
           em {formatDateTime(state.last_collection_at)}
         </p>
-        <button className="popup__cta" onClick={() => openTab(pickUrl(APP_URL, DEV_APP_URL))}>
+        <button className="popup__cta" onClick={() => openTab(APP_URL)}>
           Atualizar análise
         </button>
         <button className="popup__cta popup__cta--secondary" onClick={async () => {
@@ -115,7 +107,7 @@ function App() {
       <>
         <StatusBadge tone="ok">Conectado</StatusBadge>
         <p className="popup__msg">Última análise: nunca</p>
-        <button className="popup__cta" onClick={() => openTab(pickUrl(APP_URL, DEV_APP_URL))}>
+        <button className="popup__cta" onClick={() => openTab(APP_URL)}>
           Iniciar análise
         </button>
       </>
