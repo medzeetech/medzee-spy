@@ -64,6 +64,9 @@ class CapturedMessage(BaseModel):
     text: str | None = None
     raw_message_id: str | None = None
     source: MessageSource = "webhook"
+    # F8 — batch_id da coleta (NULL pra rows pre-f8_4). Worker filtra
+    # por esse campo pra isolar relatórios entre coletas distintas.
+    batch_id: str | None = None
     created_at: datetime
 
 
@@ -84,6 +87,11 @@ class CapturedMessageInsert(BaseModel):
     text: str | None = None
     raw_message_id: str | None = None
     source: MessageSource = "webhook"
+    # F8 — UUID v4 gerado pelo wa-collector, único por execução de coleta.
+    # Todos os batches da mesma "Gerar relatório" compartilham o mesmo
+    # batch_id. Persistido em captured_messages e usado pelo worker pra
+    # filtrar dados isoladamente por coleta.
+    batch_id: str | None = None
 
 
 # ─── HTTP responses ─────────────────────────────────────────────────

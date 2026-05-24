@@ -277,7 +277,7 @@ def test_messages_final_batch_fires_worker(
     loop.run_until_complete(_drain())
 
     fake_report_service.trigger_generate.assert_awaited_once_with(
-        TEST_USER_ID, mode="last_n_per_chat", n_per_chat=30
+        TEST_USER_ID, mode="last_n_per_chat", n_per_chat=30, batch_id="batch-2"
     )
 
 

@@ -77,6 +77,7 @@ class ReportService:
         mode: str = "last_n_per_chat",
         n_per_chat: int = 30,
         period_days: int = 30,
+        batch_id: str | None = None,
     ) -> UUID:
         """Create a generating-state report row and dispatch the worker.
 
@@ -132,6 +133,7 @@ class ReportService:
                 "mode": mode,
                 "n_per_chat": n_per_chat,
                 "period_days": period_days,
+                "batch_id": batch_id,
                 "clinic_segment": clinic_segment,
             },
         )
@@ -144,6 +146,7 @@ class ReportService:
                 n_per_chat=n_per_chat,
                 period_days=period_days,
                 whatsapp_session_id=whatsapp_session_id,
+                batch_id=batch_id,
             ),
             name=f"report-{report_id}",
         )
@@ -201,6 +204,7 @@ async def _build_and_run(
     mode: str = "last_n_per_chat",
     n_per_chat: int = 30,
     period_days: int = 30,
+    batch_id: str | None = None,
 ) -> None:
     """Coleta msgs do snapshot local (captured_messages), monta
     ``ExtractedPayload``, chama ``generate_report_pipeline``.
@@ -224,12 +228,14 @@ async def _build_and_run(
         from app.workers.report import generate_report_pipeline
 
         if mode == "last_n_per_chat":
-            # F5 path
+            # F5 path. F8: quando batch_id é passado (extension flow), isola
+            # o relatório à coleta específica — relatórios consecutivos não
+            # se fundem mesmo se compartilham wa_chatid.
             captured = await captured_repo.query_last_n_per_chat(
-                user_id, n_per_chat=n_per_chat
+                user_id, n_per_chat=n_per_chat, batch_id=batch_id
             )
             payload = _build_extracted_payload(captured)
-            source = "captured_last_n"
+            source = "captured_last_n_batch" if batch_id else "captured_last_n"
         else:
             # F4 legacy path
             since = datetime.now(timezone.utc) - timedelta(days=period_days)
