@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react';
 
 import { supabase } from '../lib/supabase';
 import { useIsMobile } from '../lib/device';
+import { callApi } from '../lib/api';
 
 import MobileBlockScreen from './MobileBlockScreen.jsx';
 import ExtensionInstallScreen from './ExtensionInstallScreen.jsx';
@@ -33,7 +34,9 @@ export default function SpyFlowScreen() {
   const [email, setEmail] = useState(null);
 
   // ON MOUNT: decide initial state baseado em auth.
-  // Se já logado (session Supabase válida), pula SIGNUP e vai pra INSTALL.
+  // Se já logado (session Supabase válida E backend reconhece o user),
+  // pula SIGNUP e vai pra INSTALL. Caso contrário (sessão zumbi de user
+  // deletado, JWT expirado, etc.), limpa session e vai pra SIGNUP.
   useEffect(() => {
     if (state !== STATES.START) return;
     let cancelled = false;
@@ -42,12 +45,32 @@ export default function SpyFlowScreen() {
       const { data } = await supabase.auth.getSession();
       if (cancelled) return;
       const session = data?.session;
-      const loggedIn = !!session?.access_token;
+      const localToken = session?.access_token;
 
-      if (loggedIn) {
-        setEmail(session.user?.email ?? null);
+      if (!localToken) {
+        setState(STATES.SIGNUP);
+        return;
+      }
+
+      // Valida que o user ainda existe no backend (cobre caso de auth.users
+      // ter sido wiped enquanto o browser manteve session cacheada).
+      try {
+        const me = await callApi('/api/auth/me', { auth: true });
+        if (cancelled) return;
+        const realEmail = me?.email ?? session.user?.email ?? null;
+        setEmail(realEmail);
         setState(STATES.INSTALL);
-      } else {
+      } catch (err) {
+        if (cancelled) return;
+        // 401/404 → session zumbi. Limpa e força novo cadastro.
+        // eslint-disable-next-line no-console
+        console.warn('[spy] session inválida, limpando:', err?.status);
+        try {
+          await supabase.auth.signOut();
+        } catch {
+          // signOut pode falhar offline — segue mesmo assim.
+        }
+        setEmail(null);
         setState(STATES.SIGNUP);
       }
     }
