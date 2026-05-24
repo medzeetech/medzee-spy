@@ -178,29 +178,87 @@ async function handleStart(): Promise<MedzeeRuntimeReply> {
     },
   });
 
-  // 4. Tell the collector content-script to begin. It may take a moment for
-  //    the content-script to be ready after a fresh tab — retry briefly.
-  const begin = async (attempt = 0): Promise<void> => {
-    try {
-      await chrome.tabs.sendMessage(waTabId, { type: "medzee:begin_collection" });
-    } catch (err) {
-      if (attempt < 10) {
-        await new Promise((r) => setTimeout(r, 500));
-        return begin(attempt + 1);
-      }
-      log("start.collector_unreachable", { error: String(err) });
-      await telemetry({
-        event: "collect_failed",
-        extension_version: EXT_VERSION,
-        reason: "collector_unreachable",
-      });
-    }
-  };
-  void begin();
+  // 4. Tell the collector content-script to begin. Two failure modes:
+  //    a) tab is fresh and content-script not injected yet → retry brevemente
+  //    b) extension foi recarregada mas a aba do WA Web ainda tem o
+  //       content-script ORPHAN da versão anterior → sendMessage retorna
+  //       "Receiving end does not exist" / "context invalidated". Fix:
+  //       chrome.tabs.reload(waTabId) força reinjeção, depois retry.
+  void runBegin(waTabId);
 
   log("start.dispatched", { tab_id: waTabId });
   await telemetry({ event: "collect_started", extension_version: EXT_VERSION });
   return { type: "medzee:ok" };
+}
+
+function _isOrphanContentScriptError(err: unknown): boolean {
+  const msg = String(err);
+  return (
+    msg.includes("Could not establish connection") ||
+    msg.includes("Receiving end does not exist") ||
+    msg.includes("Extension context invalidated")
+  );
+}
+
+async function _setProgressStep(step: string): Promise<void> {
+  const s = await getState();
+  if (!s.collection_in_progress) return;
+  await setState({
+    collection_in_progress: { ...s.collection_in_progress, current_step: step },
+  });
+}
+
+async function runBegin(waTabId: number): Promise<void> {
+  // Tenta 1x. Se for orphan content-script, força reload da aba e tenta de novo.
+  try {
+    await chrome.tabs.sendMessage(waTabId, { type: "medzee:begin_collection" });
+    return;
+  } catch (firstErr) {
+    if (!_isOrphanContentScriptError(firstErr)) {
+      // Outro erro (talvez tab ainda carregando). Cai pro retry padrão.
+      return runBeginWithRetry(waTabId, 0);
+    }
+    // Orphan content-script: a extensão foi recarregada e a aba WA Web tem
+    // o script velho. Reload da aba reinjeta o novo. WA Web mantém sessão.
+    log("start.orphan_content_script.reloading_tab", { tab_id: waTabId });
+    await _setProgressStep("Atualizando WhatsApp Web…");
+    try {
+      await chrome.tabs.reload(waTabId);
+    } catch (reloadErr) {
+      log("start.reload_failed", { error: String(reloadErr) });
+      await _setProgressStep(
+        "Erro: não foi possível recarregar a aba. Atualize manualmente (F5) e tente de novo.",
+      );
+      return;
+    }
+    // WA Web demora ~5-15s pra wa-js ficar pronto. Espera 4s antes do 1º retry
+    // e o retry loop cobre o resto.
+    await new Promise((r) => setTimeout(r, 4000));
+    await _setProgressStep("Iniciando análise…");
+    return runBeginWithRetry(waTabId, 0);
+  }
+}
+
+async function runBeginWithRetry(waTabId: number, attempt: number): Promise<void> {
+  const MAX_ATTEMPTS = 30; // 30 × 1s = 30s — folga pra WA Web carregar
+  try {
+    await chrome.tabs.sendMessage(waTabId, { type: "medzee:begin_collection" });
+    return;
+  } catch (err) {
+    if (attempt < MAX_ATTEMPTS) {
+      await new Promise((r) => setTimeout(r, 1000));
+      return runBeginWithRetry(waTabId, attempt + 1);
+    }
+    log("start.collector_unreachable", { error: String(err), attempts: MAX_ATTEMPTS });
+    await _setProgressStep(
+      "Erro: WhatsApp Web não respondeu. Recarregue a aba (F5) e tente de novo.",
+    );
+    await telemetry({
+      event: "collect_failed",
+      extension_version: EXT_VERSION,
+      reason: "collector_unreachable",
+    });
+  }
 }
 
 // --- progress step (popup-facing label) ----------------------------------

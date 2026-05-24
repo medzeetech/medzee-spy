@@ -38,10 +38,35 @@ function isPageWorldMessage(data: unknown): data is PageWorldEvent {
   );
 }
 
+// Após uma chamada falhar com "Extension context invalidated", o
+// content-script é órfão (extensão foi recarregada). Toda chamada
+// subsequente vai falhar do mesmo jeito — paramos de tentar e paramos
+// de poluir o console. O SW (novo) detecta isso no handleStart e força
+// chrome.tabs.reload, o que reinjeta uma versão fresh deste arquivo.
+let _contextInvalidated = false;
+
+function _isContextInvalidatedError(err: unknown): boolean {
+  const msg = String(err);
+  return (
+    msg.includes("Extension context invalidated") ||
+    msg.includes("Could not establish connection")
+  );
+}
+
 async function sendToSW(message: MedzeeRuntimeMessage): Promise<void> {
+  if (_contextInvalidated) return;
   try {
     await chrome.runtime.sendMessage(message);
   } catch (err) {
+    if (_isContextInvalidatedError(err)) {
+      _contextInvalidated = true;
+      // Log uma única vez — o SW já tem plano pra reinjetar via tab reload.
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[medzee.collector] contexto da extensão invalidado — aguardando reload da aba",
+      );
+      return;
+    }
     // eslint-disable-next-line no-console
     console.warn("[medzee.collector] SW unreachable", err);
   }
