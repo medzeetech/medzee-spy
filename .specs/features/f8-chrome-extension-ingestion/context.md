@@ -2,7 +2,65 @@
 
 **Gathered:** 2026-05-24
 **Spec:** `.specs/features/f8-chrome-extension-ingestion/spec.md`
-**Status:** Ready for design
+**Status:** Architecture PIVOT mid-smoke (2026-05-24) — login-based, drop JWT pairing dance
+
+---
+
+## PIVOT (2026-05-24, durante smoke E2E)
+
+**Por quê:** o design original (auto-detect via JWT pairing token) deviou do `contexto_medzee_spy.mc` lines 9-18. Spec original pedia popup com login form (mesmo email/senha do cadastro), não pairing token. Auto-pair via `localStorage` causou race condition que travou o smoke. Pivot pra alinhar com spec + simplificar.
+
+**Mudanças arquiteturais:**
+
+| Antes (Auto-detect) | Depois (Login direto) |
+|---|---|
+| Backend emite `extension_pairing_token` (JWT custom) no signup | Signup só retorna sessão Supabase padrão (auto-login) |
+| Frontend injeta token via `injectPairingToken` em localStorage + `window.medzee_spy` | Frontend não mexe com tokens da extensão — extensão tem auth própria |
+| Probe content-script auto-pareia lendo localStorage | Probe content-script removido / vira no-op |
+| Extension popup só mostra status | Extension popup tem **form de login (email/senha)** quando não logado |
+| Extension chama `/api/extension/pair` pra trocar pairing→refresh token | Extension chama `/api/auth/login` direto, guarda sessão Supabase |
+| Endpoints `/api/extension/{messages,status,telemetry}` autenticam via custom `get_current_extension_user` (refresh_token) | Mesmos endpoints, mas autenticam via `get_current_user_id` (Supabase JWT padrão) |
+| ExtensionInstallScreen pola até detectar pairing | ExtensionInstallScreen mostra **vídeo placeholder + 2 botões** ("Baixar extensão" / "Pronto, baixei e instalei") |
+| SpyFlowScreen state machine 8-state | SpyFlowScreen state machine simplificado: START → SIGNUP → INSTALL → DONE (extension trabalha autônoma após login) |
+
+**Comportamentos UX confirmados (2026-05-24):**
+
+- **WA Web abre MANUAL.** Popup da extensão tem botão "Abrir WhatsApp Web". Extensão NÃO abre tab sozinha. Spec literal.
+- **Signup auto-loga.** Botão "Pronto, baixei e instalei" abre `/app/reports/latest` em nova aba (user já autenticado pela sessão emitida no signup). O "tela de login" do spec é interpretado como "tela autenticada do app".
+- **Primeiro relatório usa janela default 30 dias.** Spec menciona escolha 7/30/90 só em "análises periódicas" (M3).
+
+**Endpoints removidos:**
+- `POST /api/extension/pair`
+- `POST /api/auth/me/extension-pairing-token`
+
+**Endpoints novos:**
+- *(nenhum — reaproveita `/api/auth/login` existente)*
+
+**Tabelas removidas:**
+- `extension_installs` (drop — sem pairing flow, install registry não tem mais valor)
+
+**Tabelas mantidas:** `extension_telemetry`, `mobile_redirect_leads`, `captured_messages` (com `source`), `whatsapp_sessions` (com `provider`).
+
+**Arquivos backend modificados:**
+- `app/modules/auth/{service,routes,schemas}.py` — sem `extension_pairing_token` na response, sem endpoint de re-emissão
+- `app/modules/extension/{routes,service,security,schemas,repository}.py` — sem pair handler, autenticação via Supabase JWT
+- `app/modules/extension/security.py` — gut (resto pequeno só pra utility)
+
+**Arquivos extension modificados:**
+- `src/popup/popup.tsx` — rewrite com login form
+- `src/service-worker.ts` — handler `medzee:login` (substitui `medzee:pair`)
+- `src/lib/api-client.ts` — `login(email, password)` (substitui `pair`)
+- `src/lib/storage.ts` — `session: {access_token, refresh_token, expires_at, user_id, email}` substitui `refresh_token`
+- `src/content-scripts/probe.ts` — gut (sem auto-pair; pode até ser removido + manifest content_scripts entry)
+
+**Arquivos frontend modificados:**
+- `src/screens/ExtensionInstallScreen.jsx` — rewrite: vídeo + 2 botões
+- `src/screens/SpyFlowScreen.jsx` — simplificar state machine
+- `src/lib/extension.js` — remover `injectPairingToken`/`requestNewPairingToken`/`useExtensionDetected` (extension agora desacoplada do frontend)
+- `src/screens/LeadFormScreen.jsx` — onSignupComplete só passa `user_id` + email
+- `src/screens/GeneratingScreen.jsx` — não escuta mais eventos da extension (extension não posta no frontend nessa arquitetura)
+
+---
 
 ---
 

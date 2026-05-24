@@ -1,0 +1,78 @@
+-- F8 PIVOT (2026-05-24): drop extension_installs table.
+-- Migration applied via Supabase MCP on 2026-05-24.
+-- Recorded here for version control / future replay.
+--
+-- Project: itghmlcipjloirsyhare (News, shared instance)
+-- Schema:  medzee_spy
+--
+-- Context:
+--   The original F8 design used a custom JWT pairing dance:
+--     1. /api/auth/signup minted a short-lived ``extension_pairing`` JWT
+--     2. Frontend stuffed it in localStorage for the Chrome extension
+--     3. Extension exchanged it for a long-lived ``extension_refresh`` JWT
+--        at POST /api/extension/pair, which UPSERTed a row in
+--        ``extension_installs`` (one row per device).
+--
+--   The auto-pair caused a race condition (extension probed before the
+--   token was injected) that broke the smoke test. The pivot drops the
+--   custom pairing entirely: the extension now shows a popup email+password
+--   login form and reuses Supabase's own access_token for every call. No
+--   custom JWT, no install registry, no exchange step.
+--
+-- Changes:
+--   1. DROP TABLE medzee_spy.extension_installs (was: install_id PK,
+--      user_id FK auth.users, paired_at, last_seen_at, extension_version,
+--      user_agent + RLS policies + GRANTs).
+--
+-- App-side cleanup applied in the same change set:
+--   * DELETE endpoint POST /api/auth/me/extension-pairing-token
+--   * DELETE endpoint POST /api/extension/pair
+--   * DELETE app/modules/extension/security.py (custom JWT helpers)
+--   * REMOVE extension_pairing_token field from SignupResponse
+--   * SWITCH /messages and /telemetry auth from custom refresh JWT to
+--     standard Supabase get_current_user_id
+--   * RE-DERIVE ExtensionStatusResponse.paired from collection history
+--     (any captured_messages row with source='extension') instead of
+--     install-row lookup.
+--
+-- Rollback: see footer.
+
+DROP TABLE IF EXISTS medzee_spy.extension_installs;
+
+-- ============================================
+-- ROLLBACK (reverse migration, paste if needed)
+-- ============================================
+-- Re-creates the table with the same DDL applied in f8_1. NOTE: any rows
+-- present at drop time are lost — the registry contained pairing metadata
+-- only (no business data), so this is acceptable for rollback.
+--
+-- CREATE TABLE medzee_spy.extension_installs (
+--   install_id TEXT PRIMARY KEY,
+--   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+--   paired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+--   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+--   extension_version TEXT,
+--   user_agent TEXT
+-- );
+--
+-- CREATE INDEX ix_extension_installs_user
+--   ON medzee_spy.extension_installs (user_id);
+--
+-- ALTER TABLE medzee_spy.extension_installs ENABLE ROW LEVEL SECURITY;
+--
+-- CREATE POLICY extension_installs_owner ON medzee_spy.extension_installs
+--   FOR ALL TO authenticated
+--   USING (user_id = auth.uid())
+--   WITH CHECK (user_id = auth.uid());
+--
+-- CREATE POLICY extension_installs_service ON medzee_spy.extension_installs
+--   FOR ALL TO service_role
+--   USING (true)
+--   WITH CHECK (true);
+--
+-- GRANT SELECT, INSERT, UPDATE, DELETE
+--   ON medzee_spy.extension_installs
+--   TO authenticator, authenticated, service_role;
+--
+-- COMMENT ON TABLE medzee_spy.extension_installs IS
+--   'F8: Chrome extension installation registry. install_id is generated client-side (uuid v4).';
