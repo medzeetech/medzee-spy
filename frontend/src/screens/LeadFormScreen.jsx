@@ -46,7 +46,7 @@ function maskCurrency(value) {
   return num.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-export default function LeadFormScreen({ onSubmit, showTicketMedio = false, whatsappSessionId = null }) {
+export default function LeadFormScreen({ onSubmit, onSignupComplete, showTicketMedio = false, whatsappSessionId = null }) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [name, setName] = useState('');
@@ -129,11 +129,26 @@ export default function LeadFormScreen({ onSubmit, showTicketMedio = false, what
         });
       }
       onSubmit?.(payload);
-      // F1 reativado: extract worker dispara pós-conexão e já existe um
-      // placeholder de reports criado em consume_extracted. Mandar pra
-      // /app/reports/latest pra usuário ver "Análise IA em curso" e o
-      // relatório auto aparecer assim que o worker finalizar.
-      navigate('/app/reports/latest');
+      // F8-T23: surface extension_pairing_token + user_id to parent via
+      // onSignupComplete (SpyFlowScreen hands off to extension pairing UX).
+      // Falls back to legacy navigate when prop is absent (old callers).
+      if (onSignupComplete) {
+        const token =
+          result?.extension_pairing_token ?? result?.data?.extension_pairing_token ?? null;
+        const userId = result?.user_id ?? result?.data?.user_id ?? null;
+        if (!token) {
+          console.warn(
+            '[LeadFormScreen] signup response missing extension_pairing_token; parent must request a new one'
+          );
+        }
+        onSignupComplete({ extension_pairing_token: token, user_id: userId });
+      } else {
+        // F1 reativado: extract worker dispara pós-conexão e já existe um
+        // placeholder de reports criado em consume_extracted. Mandar pra
+        // /app/reports/latest pra usuário ver "Análise IA em curso" e o
+        // relatório auto aparecer assim que o worker finalizar.
+        navigate('/app/reports/latest');
+      }
     } catch (err) {
       if (err?.status === 409) {
         navigate(`/login?email=${encodeURIComponent(normalizedEmail)}`);
