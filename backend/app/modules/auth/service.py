@@ -258,8 +258,10 @@ class AuthService:
                 {"email": email, "password": req.password}
             )
         except AuthApiError as exc:
-            # The profile + auth user are already in place. The frontend can
-            # recover by calling /auth/login. Surface as 400 so they know to.
+            # Rollback: profile + auth user exist but no usable session means
+            # the user can't actually proceed. Cleaner to undo the create than
+            # leave an orphan that 401s on subsequent /auth/login attempts.
+            self._safe_delete_auth_user(user_id)
             logger.warning(
                 "service.auth.signup.sign_in_failed",
                 extra={
@@ -276,10 +278,24 @@ class AuthService:
         # Step 6 — F8 / CHX-01: emit the short-lived extension pairing token.
         # The frontend stuffs it in ``window.medzee_spy`` so the Chrome
         # extension probe can trade it for a refresh token via
-        # ``POST /api/extension/pair``. Failures here would only land if the
-        # JWT secret is unconfigured — let the RuntimeError bubble so the
-        # deploy is flagged loudly rather than silently degrade.
-        extension_pairing_token = issue_pairing_token(user_id)
+        # ``POST /api/extension/pair``.
+        #
+        # If the deploy is misconfigured (``SUPABASE_JWT_SECRET`` empty), the
+        # mint raises ``RuntimeError``. Rollback the auth user so the
+        # frontend's retry can succeed once ops fixes the env — otherwise
+        # the email is permanently "already registered" and the operator has
+        # to manually clean up auth.users.
+        try:
+            extension_pairing_token = issue_pairing_token(user_id)
+        except Exception as exc:
+            self._safe_delete_auth_user(user_id)
+            logger.exception(
+                "service.auth.signup.pairing_token_mint_failed",
+                extra={"op": "signup", "user_id": str(user_id)},
+            )
+            raise SupabaseAuthError(
+                f"extension pairing token mint failed: {exc}"
+            ) from exc
 
         logger.info(
             "service.auth.signup.exit",
