@@ -7,6 +7,8 @@
   "host_permissions": [
     "https://web.whatsapp.com/*",
     "https://*.medzee.com/*",
+    "https://medzee-spy.vercel.app/*",
+    "https://medzee-spy-production.up.railway.app/*",
     "http://localhost:5173/*",
     "http://localhost:8000/*"
   ],
@@ -16,7 +18,11 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://*.medzee.com/*", "http://localhost:5173/*"],
+      "matches": [
+        "https://*.medzee.com/*",
+        "https://medzee-spy.vercel.app/*",
+        "http://localhost:5173/*"
+      ],
       "js": ["src/content-scripts/probe.ts"],
       "run_at": "document_idle"
     },

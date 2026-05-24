@@ -4,10 +4,18 @@ import { getState, clearState, type MedzeePersistedState } from "../lib/storage.
 import "./popup.css";
 
 const EXT_VERSION = chrome.runtime.getManifest().version;
-const SPY_URL = "https://medzee.com/spy";          // TODO: env-driven in M3
-const APP_URL = "https://medzee.com/app/whatsapp"; // same
-const DEV_SPY_URL = "http://localhost:5173/spy";
-const DEV_APP_URL = "http://localhost:5173/app/whatsapp";
+
+// URLs do app público. Em build-time, `VITE_FRONTEND_URL` no .env override
+// o default. Dev local (`Load unpacked` sem .env) cai no localhost.
+const FRONTEND_URL =
+  (import.meta as ImportMeta & { env?: Record<string, string | undefined> })
+    .env?.VITE_FRONTEND_URL?.replace(/\/+$/, "") ?? "https://medzee-spy.vercel.app";
+const FRONTEND_DEV_URL = "http://localhost:5173";
+
+const SPY_URL = `${FRONTEND_URL}/spy`;
+const APP_URL = `${FRONTEND_URL}/app/whatsapp`;
+const DEV_SPY_URL = `${FRONTEND_DEV_URL}/spy`;
+const DEV_APP_URL = `${FRONTEND_DEV_URL}/app/whatsapp`;
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "nunca";

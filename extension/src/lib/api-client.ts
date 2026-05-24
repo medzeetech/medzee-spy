@@ -12,9 +12,14 @@
  *    can react (re-pair on 401, surface "outdated" UI on 409, throttle
  *    on 429).
  *
- * NOTE — backend base URL: hard-coded `http://localhost:8000` for the
- * MVP. M3 will thread the prod URL via a Vite build-time env var
- * (see design §11.x rollout).
+ * Backend base URL is resolved in this order:
+ *  1. `import.meta.env.VITE_BACKEND_URL` — Vite build-time substitution.
+ *     Set this in `extension/.env` (`VITE_BACKEND_URL=https://medzee-spy-production.up.railway.app`)
+ *     so different builds (dev/staging/prod) target the right backend.
+ *  2. `http://localhost:8000` — fallback for unconfigured local dev builds.
+ *
+ * The value is baked at build time — `npm run build` reads `.env`, swaps
+ * the literal, and ships it. There's no runtime override hook (yet).
  */
 import type {
   ExtensionMessageBatch,
@@ -25,7 +30,9 @@ import type {
 } from "./messages.js";
 import { getState } from "./storage.js";
 
-const DEFAULT_BACKEND = "http://localhost:8000";
+const DEFAULT_BACKEND =
+  (import.meta as ImportMeta & { env?: Record<string, string | undefined> })
+    .env?.VITE_BACKEND_URL?.replace(/\/+$/, "") ?? "http://localhost:8000";
 
 // ─── Typed error classes (caught by service-worker switch) ─────────────
 

@@ -6,3 +6,6 @@ public/wa-collector.js.map
 .DS_Store
 *.log
 .vite/
+.env
+.env.local
+.env.*.local
