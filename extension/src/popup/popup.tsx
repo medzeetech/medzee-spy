@@ -9,6 +9,8 @@ import "./popup.css";
 
 const EXT_VERSION = chrome.runtime.getManifest().version;
 const WA_WEB_URL = "https://web.whatsapp.com/";
+const SITE_URL = "https://medzee-spy.vercel.app";
+const SITE_LOGIN_URL = `${SITE_URL}/login`;
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "nunca";
@@ -44,81 +46,6 @@ function StatusBadge({
   return <span className={`badge badge--${tone}`}>{children}</span>;
 }
 
-function LoginForm({ onSuccess }: { onSuccess: () => void }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const onSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!email || !password || submitting) return;
-      setSubmitting(true);
-      setError(null);
-      try {
-        const reply = await sendToSW({
-          type: "medzee:login",
-          payload: { email: email.trim(), password },
-        });
-        if (reply.type === "medzee:ok") {
-          onSuccess();
-          return;
-        }
-        if (reply.type === "medzee:error") {
-          setError(reply.message ?? "Falha ao entrar");
-        } else {
-          setError("Resposta inesperada do worker");
-        }
-      } catch (err) {
-        setError(`Erro de conexão: ${String(err)}`);
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [email, password, submitting, onSuccess],
-  );
-
-  return (
-    <form className="popup__form" onSubmit={onSubmit}>
-      <StatusBadge tone="warn">Não conectado</StatusBadge>
-      <p className="popup__msg">Entre com sua conta Medzee para coletar.</p>
-      <label className="popup__label">
-        Email
-        <input
-          className="popup__input"
-          type="email"
-          autoComplete="username"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          disabled={submitting}
-          required
-        />
-      </label>
-      <label className="popup__label">
-        Senha
-        <input
-          className="popup__input"
-          type="password"
-          autoComplete="current-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          disabled={submitting}
-          required
-        />
-      </label>
-      {error && <div className="popup__error">{error}</div>}
-      <button
-        type="submit"
-        className="popup__cta"
-        disabled={submitting || !email || !password}
-      >
-        {submitting ? "Entrando…" : "Entrar"}
-      </button>
-    </form>
-  );
-}
-
 function App() {
   const [state, setState] = useState<MedzeePersistedState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -140,8 +67,8 @@ function App() {
       }
     })();
 
-    // Re-read whenever storage changes (login from another popup instance,
-    // collection progress ticks, etc).
+    // Re-read whenever storage changes (probe just synced a fresh session,
+    // collection progress ticked, user logged out, etc).
     const onChange = (
       changes: { [k: string]: chrome.storage.StorageChange },
       area: chrome.storage.AreaName,
@@ -191,7 +118,25 @@ function App() {
   let body: React.ReactNode;
 
   if (!session) {
-    body = <LoginForm onSuccess={refresh} />;
+    // No session synced from the site yet. Either the user isn't logged in
+    // on medzee-spy.vercel.app or they haven't opened a tab there since
+    // installing the extension.
+    body = (
+      <>
+        <StatusBadge tone="warn">Não conectado</StatusBadge>
+        <p className="popup__msg">
+          Faça login (ou cadastre-se) em <strong>medzee-spy.vercel.app</strong>{" "}
+          numa aba do Chrome. A extensão pega a sessão automaticamente —
+          sem precisar digitar a senha aqui.
+        </p>
+        <button
+          className="popup__cta"
+          onClick={() => openTab(SITE_LOGIN_URL)}
+        >
+          Abrir Medzee Spy
+        </button>
+      </>
+    );
   } else if (collecting && state.collection_in_progress) {
     const cip = state.collection_in_progress;
     body = (
