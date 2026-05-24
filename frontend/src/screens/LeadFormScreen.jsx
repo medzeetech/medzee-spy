@@ -129,19 +129,13 @@ export default function LeadFormScreen({ onSubmit, onSignupComplete, showTicketM
         });
       }
       onSubmit?.(payload);
-      // F8-T23: surface extension_pairing_token + user_id to parent via
-      // onSignupComplete (SpyFlowScreen hands off to extension pairing UX).
-      // Falls back to legacy navigate when prop is absent (old callers).
+      // F8 PIVOT 2026-05-24: hand off user_id + email to parent (SpyFlowScreen).
+      // No more extension_pairing_token — extension is decoupled and has its
+      // own login. Falls back to legacy navigate when prop is absent.
+      const userId = result?.user?.id ?? result?.user_id ?? result?.data?.user_id ?? null;
+      const signupEmail = result?.user?.email ?? result?.email ?? normalizedEmail;
       if (onSignupComplete) {
-        const token =
-          result?.extension_pairing_token ?? result?.data?.extension_pairing_token ?? null;
-        const userId = result?.user_id ?? result?.data?.user_id ?? null;
-        if (!token) {
-          console.warn(
-            '[LeadFormScreen] signup response missing extension_pairing_token; parent must request a new one'
-          );
-        }
-        onSignupComplete({ extension_pairing_token: token, user_id: userId });
+        onSignupComplete({ user_id: userId, email: signupEmail });
       } else {
         // F1 reativado: extract worker dispara pós-conexão e já existe um
         // placeholder de reports criado em consume_extracted. Mandar pra
