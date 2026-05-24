@@ -1,30 +1,26 @@
-// F8 — ExtensionInstallScreen (PIVOT 2026-05-24).
+// F8 — ExtensionInstallScreen (PIVOT 2026-05-24, 3ª iteração UX).
 //
-// Tela estática mostrada após o signup pra instruir o user a instalar a extensão
-// do Chrome. Sem polling, sem pairing token — a extensão é desacoplada do
-// frontend e tem auth própria (login com email/senha do user no popup).
-//
-// UX:
-//   - Vídeo placeholder explicativo (em breve)
-//   - Botão "Baixar extensão" abre Chrome Web Store em nova aba
-//   - Botão "Pronto, baixei e instalei" abre /app/reports/latest em nova aba
-//     (signup já auto-logou o user via session Supabase).
+// Tela estática mostrada após o signup. Botão "Pronto, baixei e instalei"
+// abre web.whatsapp.com em nova aba — lá o user clica no ícone da extensão
+// pra gerar o relatório. Quando termina, a extensão mostra um botão
+// "Ver relatório" que volta pro app já logado.
 
-import { Puzzle, Download, Check, Video } from 'lucide-react';
+import { Puzzle, Download, MessageCircle, Video } from 'lucide-react';
 
 // PENDING_ID: replaced after Chrome Web Store submission (T27)
 const CHROME_STORE_URL = 'https://chrome.google.com/webstore/detail/medzee-spy/PENDING_ID';
+const WHATSAPP_WEB_URL = 'https://web.whatsapp.com/';
 
 /**
  * Tela "Instale a extensão" (estática).
  *
  * Props:
  *   - userEmail?: string — email cadastrado, exibido como confirmação no rodapé.
- *   - step?: string — texto opcional do header (default "Passo 2 de 3").
+ *   - step?: string — texto opcional do header (default "Passo 2 de 2").
  */
-export default function ExtensionInstallScreen({ userEmail, step = 'Passo 2 de 3' }) {
-  function openReportLatest() {
-    window.open('/app/reports/latest', '_blank');
+export default function ExtensionInstallScreen({ userEmail, step = 'Passo 2 de 2' }) {
+  function openWhatsAppWeb() {
+    window.open(WHATSAPP_WEB_URL, '_blank');
   }
 
   return (
@@ -44,11 +40,18 @@ export default function ExtensionInstallScreen({ userEmail, step = 'Passo 2 de 3
           <p className="text-sm">Vídeo explicativo (em breve)</p>
         </div>
 
-        <p className="text-sm text-slate-400 leading-relaxed">
-          A extensão Medzee Spy é gratuita e instalada do Chrome Web Store em 30 segundos.
-          Depois de instalar, você precisa abrir o popup da extensão (ícone no Chrome) e
-          fazer login com o mesmo email e senha que você acabou de cadastrar.
-        </p>
+        <div className="text-sm text-slate-400 leading-relaxed space-y-2">
+          <p>A extensão Medzee Spy é gratuita e instala em 30 segundos pelo Chrome Web Store.</p>
+          <p>
+            <strong className="text-slate-200">Próximos passos:</strong>
+          </p>
+          <ol className="list-decimal list-inside space-y-1 ml-1">
+            <li>Click em <strong>&quot;Baixar extensão&quot;</strong> e instale.</li>
+            <li>Click em <strong>&quot;Pronto, baixei e instalei&quot;</strong> — abre o WhatsApp Web.</li>
+            <li>No WhatsApp Web, click no ícone Medzee Spy (barra do Chrome) e <strong>&quot;Gerar relatório&quot;</strong>.</li>
+            <li>Quando terminar, click <strong>&quot;Ver relatório&quot;</strong> na extensão pra ver sua análise.</li>
+          </ol>
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <a
@@ -62,10 +65,10 @@ export default function ExtensionInstallScreen({ userEmail, step = 'Passo 2 de 3
           </a>
           <button
             type="button"
-            onClick={openReportLatest}
-            className="flex items-center justify-center gap-2 px-4 py-3 bg-slate-700 hover:bg-slate-600 text-slate-100 rounded-lg font-semibold transition-colors"
+            onClick={openWhatsAppWeb}
+            className="flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 hover:bg-emerald-500 text-slate-100 rounded-lg font-semibold transition-colors"
           >
-            <Check className="w-5 h-5" />
+            <MessageCircle className="w-5 h-5" />
             Pronto, baixei e instalei
           </button>
         </div>

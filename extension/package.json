@@ -6,8 +6,7 @@
   "description": "Chrome extension that reads WhatsApp Web for Medzee Spy commercial analysis",
   "scripts": {
     "build:icons": "node scripts/build-icons.mjs",
-    "build:wa-collector": "vite build --config vite.wa-collector.config.ts",
-    "build": "npm run build:icons && npm run build:wa-collector && vite build",
+    "build": "npm run build:icons && vite build",
     "dev": "vite build --watch",
     "typecheck": "tsc --noEmit"
   },

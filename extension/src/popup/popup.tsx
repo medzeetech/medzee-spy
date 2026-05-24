@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { getState, type MedzeePersistedState } from "../lib/storage.js";
+import { getState, clearState, type MedzeePersistedState } from "../lib/storage.js";
+import { getStatus, UnauthorizedError } from "../lib/api-client.js";
 import type {
   MedzeeRuntimeMessage,
   MedzeeRuntimeReply,
@@ -16,6 +17,7 @@ const SITE_URL =
   (import.meta as ImportMeta & { env?: Record<string, string | undefined> })
     .env?.VITE_FRONTEND_URL?.replace(/\/+$/, "") ?? "https://medzee-spy.vercel.app";
 const SITE_LOGIN_URL = `${SITE_URL}/login`;
+const REPORT_URL = `${SITE_URL}/app/reports/latest`;
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "nunca";
@@ -69,6 +71,24 @@ function App() {
       if (!cancelled) {
         setState(s);
         setLoading(false);
+      }
+
+      // Valida session contra backend — cobre o caso de session "zumbi"
+      // (user deletado em auth.users mas JWT ainda não expirou). Se 401,
+      // limpa state localmente e a UI re-renderiza pra "Não conectado".
+      if (s.session) {
+        try {
+          await getStatus();
+        } catch (err) {
+          if (cancelled) return;
+          if (err instanceof UnauthorizedError) {
+            // eslint-disable-next-line no-console
+            console.warn("[popup] session zumbi detectada, limpando");
+            await clearState();
+            // chrome.storage.onChanged listener (abaixo) já vai disparar
+            // refresh — não precisa setState aqui.
+          }
+        }
       }
     })();
 
@@ -157,9 +177,11 @@ function App() {
       </>
     );
   } else if (hasHistory) {
+    // DONE state: user já tem relatório. Primário = "Ver relatório" (volta
+    // pro app já logado). Secundário = "Gerar novo relatório".
     body = (
       <>
-        <StatusBadge tone="ok">Conectado</StatusBadge>
+        <StatusBadge tone="ok">Relatório pronto</StatusBadge>
         <p className="popup__email-display">{session.email}</p>
         <p className="popup__msg">
           Última análise:{" "}
@@ -168,14 +190,14 @@ function App() {
           em {formatDateTime(state.last_collection_at)}
         </p>
         {actionError && <div className="popup__error">{actionError}</div>}
+        <button className="popup__cta" onClick={() => openTab(REPORT_URL)}>
+          Ver relatório
+        </button>
         <button
           className="popup__cta popup__cta--secondary"
-          onClick={() => openTab(WA_WEB_URL)}
+          onClick={onStart}
         >
-          Abrir WhatsApp Web
-        </button>
-        <button className="popup__cta" onClick={onStart}>
-          Atualizar análise
+          Gerar novo relatório
         </button>
         <button
           className="popup__cta popup__cta--secondary"
@@ -186,20 +208,26 @@ function App() {
       </>
     );
   } else {
+    // IDLE state: user logado, sem nenhuma análise ainda. Primário = "Gerar
+    // relatório". Secundário = "Abrir WhatsApp Web" (caso user esteja vendo
+    // o popup de outra aba que não a do WA Web).
     body = (
       <>
         <StatusBadge tone="ok">Conectado</StatusBadge>
         <p className="popup__email-display">{session.email}</p>
-        <p className="popup__msg">Última análise: nunca</p>
+        <p className="popup__msg">
+          Vá pro WhatsApp Web (aba aberta no Chrome) e clique em{" "}
+          <strong>Gerar relatório</strong> abaixo.
+        </p>
         {actionError && <div className="popup__error">{actionError}</div>}
+        <button className="popup__cta" onClick={onStart}>
+          Gerar relatório
+        </button>
         <button
           className="popup__cta popup__cta--secondary"
           onClick={() => openTab(WA_WEB_URL)}
         >
           Abrir WhatsApp Web
-        </button>
-        <button className="popup__cta" onClick={onStart}>
-          Iniciar análise
         </button>
         <button
           className="popup__cta popup__cta--secondary"

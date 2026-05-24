@@ -1,8 +1,9 @@
 // Medzee Spy — content script in web.whatsapp.com.
 //
 // Bridges the page-world wa-collector (which uses wa-js to read the Store)
-// to the extension service worker. Injects the page-world bundle on load
-// and routes messages in both directions.
+// to the extension service worker. The wa-collector now runs as a
+// MAIN-world content script (declared in manifest), bypassing the
+// WhatsApp Web CSP that previously blocked `<script src=...>` injection.
 
 import type {
   ExtensionMessageBatch,
@@ -12,23 +13,7 @@ import type {
 
 const EXT_VERSION = chrome.runtime.getManifest().version;
 
-// --- 1. Inject the page-world bundle --------------------------------------
-
-(function injectPageWorld() {
-  try {
-    const url = chrome.runtime.getURL("wa-collector.js");
-    const script = document.createElement("script");
-    script.src = url;
-    script.async = false;
-    script.onload = () => script.remove();
-    (document.head || document.documentElement).appendChild(script);
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error("[medzee.collector] inject failed", err);
-  }
-})();
-
-// --- 2. Listen to page-world messages -------------------------------------
+// --- Listen to page-world messages ----------------------------------------
 
 interface PageWorldEvent {
   from: "medzee:wa-collector";

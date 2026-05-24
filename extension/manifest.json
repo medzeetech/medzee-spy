@@ -30,12 +30,12 @@
       "matches": ["https://web.whatsapp.com/*"],
       "js": ["src/content-scripts/collector.ts"],
       "run_at": "document_idle"
-    }
-  ],
-  "web_accessible_resources": [
+    },
     {
-      "resources": ["wa-collector.js"],
-      "matches": ["https://web.whatsapp.com/*"]
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["src/page-world/wa-collector.ts"],
+      "world": "MAIN",
+      "run_at": "document_idle"
     }
   ],
   "action": {
