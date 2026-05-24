@@ -4,6 +4,15 @@
 
 ## Decisões
 
+- **D11 (2026-05-24 — F8 pivot) — Substituir provider WhatsApp uazapi por Chrome Extension MV3 (cliente lê WhatsApp Web no browser do user).**
+  Por quê: uazapi paid se mostrou instável puxando histórico (history-sync inconsistente; instâncias morrendo 1-2min após connected; tier free não suporta /chat/find). Lib não-oficial server-side (Baileys/whatsapp-web.js) também é vendor lock-in num provedor com banimento possível. Solução: **a sessão do user faz a coleta**. Extensão Chrome MV3 lê IndexedDB do WhatsApp Web (`wawc`) ou DOM (fallback), envia em batch ao backend. Sem QR no /spy, sem auth state server-side, sem provider externo.
+  Como aplicar: feature flag `WHATSAPP_PROVIDER=extension|uazapi` (default `extension`). Strategy pattern já existente em `app/clients/whatsapp/`. Endpoints `/api/extension/{pair,messages}` novos. Worker F3 (Claude) reusado sem mudança. `captured_messages` reaproveitada (novo campo `source='extension'`). Cadastro INVERTE ordem: signup primeiro → emite `extension_pairing_token` (JWT 15min TTL) → user instala extensão → extensão lê token via `window.medzee_spy` + pareia → coleta inicia sob comando.
+  Trade-offs aceitos:
+  - **Chrome desktop only** — Chrome mobile não suporta extensão (API não existe); mobile bloqueado com `MobileBlockScreen` + capture de email (sem fallback Baileys).
+  - **Fricção de instalar extensão** — perde "wow factor" do QR escaneando, ganha estabilidade real.
+  - **Cleanup uazapi adiado** — código fica deprecated atrás de flag, removido em M3 após smoke de F8.
+  Vide `.specs/features/f8-chrome-extension-ingestion/{spec,context}.md`.
+
 - **D9 (2026-05-18 — F5 pivot) — Coleta por "últimas N mensagens de cada conversa" em vez de janela temporal.**
   Por quê: empiricamente, uazapi paid não entrega histórico antigo via `cutoff_ts`. `/chat/find` lista conversas; `/message/history-sync` popula o cache; `/message/find` lê o que foi sincronizado — mas com sincronização limitada às últimas N mensagens por chat (não retroativa). Filtrar por dias descartava quase tudo. Estratégia nova: pedir as últimas N (default 30) de CADA conversa, sem janela temporal. Funciona em qualquer tier.
   Como aplicar: pipeline `pull_last_n_per_chat(provider, token, *, n_per_chat=30)` em `app/workers/extract.py`. ReportService aceita `mode='last_n_per_chat'|'window_days'` (default last_n). Modal frontend mostra 10/20/30/50 msgs por conversa em vez de 7/15/30/60 dias.
@@ -171,6 +180,7 @@
 - [x] ~~F5 smoke E2E~~ — confirmado 2026-05-19 (mesmo run do F4 smoke).
 - [x] ~~**F6 — DX & Docs**~~ — 2026-05-19. README raiz, .env.example refinados, `package.json` raiz com `npm run dev` (concurrently), .gitignore atualizado.
 - [ ] **F7 — Route guards (opcional)** — guard de rota autenticada em `/app/*`. Pequeno (~30min). Não bloqueia M1.
+- [ ] **F8 — Chrome Extension Ingestion (M2 pivot)** — SPEC + CONTEXT prontos (2026-05-24). Próximo: design + tasks + execute. Decisão D11. Specs em `.specs/features/f8-chrome-extension-ingestion/`. 14 requirement IDs CHX-XX. Sub-tasks principais previstas: (a) backend `app/clients/whatsapp/extension.py` + endpoints `/api/extension/*` + migrations (`mobile_redirect_leads` + `captured_messages.source`), (b) Chrome Extension MV3 (manifest + service worker + content-script collector + DOM probe), (c) frontend (`MobileBlockScreen`, `ExtensionInstallScreen`, `/spy` invertido, auto-detect via postMessage), (d) feature flag `WHATSAPP_PROVIDER`.
 
 ## Ideias adiadas
 
