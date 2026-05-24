@@ -4,9 +4,11 @@
 // in chrome.storage.local; in-flight collection progress is checkpointed so a
 // re-wake can resume rather than restart.
 //
-// Post-pivot (2026-05-24): auth flow is email+password → `/api/auth/login`.
-// The extension stores the resulting Supabase session itself; there is no
-// more pairing token dance with the frontend.
+// Post-pivot (2026-05-24, 2nd iteration): silent session pickup. The probe
+// content-script on the frontend domain reads the Supabase session from
+// localStorage and pushes it to this worker via `medzee:session_sync`.
+// We store it in chrome.storage and use the access_token as Bearer on
+// `/api/extension/*`. No popup login form, no `/api/auth/login` call.
 
 import {
   getState,
@@ -14,7 +16,6 @@ import {
   clearState,
 } from "./lib/storage.js";
 import {
-  login as apiLogin,
   sendBatch as apiSendBatch,
   sendTelemetry as apiSendTelemetry,
   UnauthorizedError,
@@ -26,6 +27,7 @@ import type {
   ExtensionTelemetryEventPayload,
   MedzeeRuntimeMessage,
   MedzeeRuntimeReply,
+  SupabaseSessionSnapshot,
   WindowMedzeeMessage,
 } from "./lib/messages.js";
 
@@ -71,45 +73,54 @@ async function telemetry(payload: ExtensionTelemetryEventPayload): Promise<void>
   }
 }
 
-// --- login / logout -------------------------------------------------------
+// --- session sync / logout ------------------------------------------------
 
-async function handleLogin(payload: {
-  email: string;
-  password: string;
-}): Promise<MedzeeRuntimeReply> {
-  try {
-    const resp = await apiLogin(payload.email, payload.password);
-    const nowSec = Math.floor(Date.now() / 1000);
-    await setState({
-      session: {
-        access_token: resp.session.access_token,
-        refresh_token: resp.session.refresh_token,
-        expires_at: nowSec + resp.session.expires_in,
-        user_id: resp.user.id,
-        email: resp.user.email,
-      },
-      extension_version: EXT_VERSION,
-    });
-    log("login.success", { user_id: resp.user.id });
-    return { type: "medzee:ok" };
-  } catch (err) {
-    log("login.failed", { error: String(err) });
-    if (err instanceof UnauthorizedError) {
-      return {
-        type: "medzee:error",
-        code: "invalid_credentials",
-        message: "Email ou senha inválido",
-      };
+async function handleSessionSync(
+  snapshot: SupabaseSessionSnapshot | null,
+): Promise<MedzeeRuntimeReply> {
+  // null payload = user is logged out on the site → wipe our cache.
+  if (!snapshot) {
+    const state = await getState();
+    if (state.session) {
+      log("session.cleared_from_site");
+      await clearState();
     }
-    return {
-      type: "medzee:error",
-      code: "login_failed",
-      message: String(err),
-    };
+    return { type: "medzee:ok" };
   }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const expiresAt =
+    typeof snapshot.expires_at === "number"
+      ? snapshot.expires_at
+      : typeof snapshot.expires_in === "number"
+        ? nowSec + snapshot.expires_in
+        : nowSec + 3600; // conservative default; Supabase JS will refresh
+
+  const existing = await getState();
+  const existingToken = existing.session?.access_token;
+  const incomingToken = snapshot.access_token;
+
+  await setState({
+    session: {
+      access_token: incomingToken,
+      refresh_token: snapshot.refresh_token,
+      expires_at: expiresAt,
+      user_id: snapshot.user.id,
+      email: snapshot.user.email,
+    },
+    extension_version: EXT_VERSION,
+  });
+
+  if (existingToken !== incomingToken) {
+    log("session.synced", { user_id: snapshot.user.id });
+  }
+  return { type: "medzee:ok" };
 }
 
 async function handleLogout(): Promise<MedzeeRuntimeReply> {
+  // User clicked "Sair" in the popup. Wipes only our cached session — the
+  // site session in localStorage is untouched, so the next probe sync will
+  // re-populate it. To fully log out, the user needs to log out on the site.
   await clearState();
   log("logout.cleared");
   return { type: "medzee:ok" };
@@ -317,8 +328,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "medzee:get_state":
         reply = await handleGetState();
         break;
-      case "medzee:login":
-        reply = await handleLogin(message.payload);
+      case "medzee:session_sync":
+        reply = await handleSessionSync(message.payload);
         break;
       case "medzee:logout":
         reply = await handleLogout();

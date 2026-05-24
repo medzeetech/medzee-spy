@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, Info, RefreshCw, WifiOff } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Clock, Info, RefreshCw, WifiOff } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
 import { useReportPolling } from '../../lib/reports.js';
 import { useMe } from '../../lib/me.js';
@@ -85,6 +85,95 @@ function ScopeWarningBanner({ text }) {
     >
       <Info size={16} style={{ color: COLORS.gold, flexShrink: 0, marginTop: 2 }} />
       <span>{text}</span>
+    </div>
+  );
+}
+
+function NoReportYetCard() {
+  // M2: empty state honesto quando o user chega em /app/reports/latest
+  // antes da extensão rodar a primeira análise. Substitui o progress fake
+  // que mostrava "Conectando ao WhatsApp… 26%" sem nada acontecer.
+  return (
+    <div
+      style={{
+        padding: 48,
+        textAlign: 'center',
+        maxWidth: 560,
+        margin: '0 auto',
+      }}
+    >
+      <div
+        style={{
+          width: 64,
+          height: 64,
+          borderRadius: 16,
+          background: 'rgba(255,107,53,0.1)',
+          color: COLORS.orange,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginBottom: 16,
+        }}
+      >
+        <Clock size={32} />
+      </div>
+      <h1
+        style={{
+          fontSize: 22,
+          fontWeight: 800,
+          color: COLORS.ink,
+          marginBottom: 12,
+          letterSpacing: '-0.02em',
+        }}
+      >
+        Aguardando primeira análise
+      </h1>
+      <p
+        style={{
+          fontSize: 14,
+          color: COLORS.inkSoft,
+          lineHeight: 1.6,
+          marginBottom: 24,
+        }}
+      >
+        Sua conta está pronta, mas ainda não temos dados pra analisar.
+      </p>
+      <div
+        style={{
+          textAlign: 'left',
+          background: 'rgba(255,107,53,0.06)',
+          border: '1px solid rgba(255,107,53,0.2)',
+          borderRadius: 12,
+          padding: 20,
+          marginBottom: 24,
+        }}
+      >
+        <strong style={{ color: COLORS.ink }}>Próximos passos:</strong>
+        <ol style={{ marginTop: 12, paddingLeft: 24, lineHeight: 1.8, color: COLORS.ink }}>
+          <li>Clique no ícone <strong>Medzee Spy</strong> na barra do Chrome</li>
+          <li>No popup, click em <strong>"Abrir WhatsApp Web"</strong></li>
+          <li>Faça login no WhatsApp Web (escaneie o QR no celular se necessário)</li>
+          <li>Volte no popup e click <strong>"Iniciar análise"</strong></li>
+          <li>Aguarde ~60-90s. Esta página atualiza automaticamente.</li>
+        </ol>
+      </div>
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        style={{
+          padding: '10px 20px',
+          background: COLORS.orange,
+          color: COLORS.cream,
+          border: 'none',
+          borderRadius: 10,
+          fontSize: 14,
+          fontWeight: 600,
+          cursor: 'pointer',
+          fontFamily: "'Red Hat Display', sans-serif",
+        }}
+      >
+        Atualizar página
+      </button>
     </div>
   );
 }
@@ -287,11 +376,31 @@ export default function ReportDetailPage() {
     return null;
   }
 
+  if (state.status === 'not_found') {
+    return (
+      <div>
+        <BackButton onClick={() => navigate('/app/reports')} />
+        <NoReportYetCard />
+      </div>
+    );
+  }
+
   if (state.status === 'pending' || state.status === 'generating') {
     return <ReportGeneratingState elapsedMs={state.elapsedMs} />;
   }
 
   if (state.status === 'failed') {
+    // Caso especial: 404 que estourou MAX_404_MS vira failed com
+    // error='report_not_created'. UX igual ao not_found inicial — não
+    // existe relatório, oferecemos os mesmos próximos passos.
+    if (state.error === 'report_not_created') {
+      return (
+        <div>
+          <BackButton onClick={() => navigate('/app/reports')} />
+          <NoReportYetCard />
+        </div>
+      );
+    }
     return (
       <div>
         <BackButton onClick={() => navigate('/app/reports')} />

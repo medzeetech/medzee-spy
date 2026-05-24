@@ -26,7 +26,6 @@ import type {
   ExtensionMessageBatch,
   ExtensionStatusResponse,
   ExtensionTelemetryEventPayload,
-  LoginResponse,
 } from "./messages.js";
 import { getState } from "./storage.js";
 
@@ -209,21 +208,11 @@ function extractDetail(body: unknown): { message?: string; min_version?: string 
 }
 
 // ─── Public API (one helper per endpoint) ──────────────────────────────
-
-/**
- * `POST /api/auth/login` — no auth, returns a Supabase session for the
- * given credentials. Throws on 401 (invalid email/password) or network
- * failure.
- */
-export async function login(
-  email: string,
-  password: string,
-): Promise<LoginResponse> {
-  return fetchJson<LoginResponse>("/api/auth/login", {
-    method: "POST",
-    body: { email, password },
-  });
-}
+//
+// Post-pivot (2026-05-24, 2nd iteration): no `login()` helper. The
+// extension picks up the Supabase session from the site's localStorage
+// via the probe content-script and forwards it to the SW. All endpoints
+// below use the `session.access_token` as Bearer (via `auth: true`).
 
 /** `POST /api/extension/messages` — auth: access_token, 202 Accepted on success. */
 export async function sendBatch(

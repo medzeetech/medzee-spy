@@ -1,120 +1,16 @@
-import { Sparkles, MessageCircle, Brain, Wifi } from 'lucide-react';
+// M2 simplificado — sem mais fake stats de uazapi/whatsapp.
+//
+// A extensão Chrome agora coleta as mensagens fora do nosso runtime, então
+// não temos visibilidade de "X conversas / Y mensagens" durante a geração.
+// O backend polling do report row (useReportPolling) é a única fonte de
+// verdade — quando ele transiciona pra completed/partial/failed, mostramos
+// o relatório ou o erro. Enquanto isso, spinner honesto.
+
+import { Sparkles } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
-import { useUazapiStats, useWhatsappStatus } from '../../lib/whatsapp.js';
-
-// F5: 3 fases reais + contagem de msgs derivada da porcentagem.
-//
-// Fase 1: COLETANDO        — uazapiStats.chat_count (real, ao vivo)
-//                            + msgs cresce proporcional a pct (mesma curva
-//                            da barra de progresso → UX coesa)
-// Fase 2: SINCRONIZANDO    — chat_count > 0, msgs no total real
-//                            (vem do captured_messages via /whatsapp/status)
-// Fase 3: IA ANALISANDO    — backend já recebeu payload, LLM rodando
-//                            (heurística temporal — uazapiStats não revela isso)
-//
-// O elapsedMs vem do polling de /api/reports/{id}; >=30s presume LLM.
-//
-// A contagem visualmente cresce sincronizada com a porcentagem (mesma
-// derivação temporal), não em curva própria — o user vê "8.623 mensagens"
-// chegar no exato instante em que a barra atinge 50% (fim da fase PULL).
-// Daí em diante (LLM/FINALIZING) congela no total real enquanto a barra
-// continua subindo (mas é o LLM agora, não mais leitura).
-
-const PHASE_PULL = 'pull';
-const PHASE_LLM = 'llm';
-const PHASE_FINALIZING = 'finalizing';
-
-// Fase PULL termina em pct=50% (ver computeProgress). A contagem de msgs
-// é normalizada por esse 50% pra atingir 100% no fim da fase PULL.
-const PULL_END_PCT = 50;
-
-function pickPhase(elapsedMs, hasData) {
-  if (elapsedMs < 30_000) return hasData ? PHASE_PULL : PHASE_PULL;
-  if (elapsedMs < 90_000) return PHASE_LLM;
-  return PHASE_FINALIZING;
-}
-
-function StatPill({ Icon, value, label, highlight }) {
-  return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '8px 12px',
-        borderRadius: 99,
-        background: highlight ? 'rgba(255,107,53,0.1)' : COLORS.sunken,
-        border: `1px solid ${highlight ? 'rgba(255,107,53,0.3)' : COLORS.hairline}`,
-        fontSize: 12.5,
-        fontWeight: 600,
-        color: highlight ? COLORS.orange : COLORS.inkSoft,
-      }}
-    >
-      <Icon size={13} />
-      <span style={{ color: highlight ? COLORS.orange : COLORS.ink, fontWeight: 700 }}>
-        {value}
-      </span>
-      <span>{label}</span>
-    </div>
-  );
-}
 
 export default function ReportGeneratingState({ elapsedMs = 0 }) {
-  // 2 fontes:
-  //   - useUazapiStats: chat_count ao vivo via uazapi /chat/find
-  //   - useWhatsappStatus: message_count do captured_messages (total real)
-  const uazapiStats = useUazapiStats({ enabled: true, intervalMs: 3000 });
-  const { status: waStatus } = useWhatsappStatus();
-  const chatCount = uazapiStats?.stats?.chat_count ?? 0;
-  const totalCapturedMsgs = waStatus?.message_count ?? 0;
-
-  const hasData = chatCount > 0 || totalCapturedMsgs > 0;
-  const phase = pickPhase(elapsedMs, hasData);
-
-  // Progresso aproximado: 0-30s = 0-50% (pull), 30-90s = 50-90% (LLM),
-  // 90s+ = 90-98% (finalizing). Cap em 98%.
-  let pct;
-  if (phase === PHASE_PULL) {
-    pct = Math.min(PULL_END_PCT, (elapsedMs / 30_000) * PULL_END_PCT);
-  } else if (phase === PHASE_LLM) {
-    pct = PULL_END_PCT + Math.min(40, ((elapsedMs - 30_000) / 60_000) * 40);
-  } else {
-    pct = 90 + Math.min(8, ((elapsedMs - 90_000) / 60_000) * 8);
-  }
-  pct = Math.round(pct);
-
-  // Contagem de msgs DERIVADA da porcentagem da barra. Normalizada por
-  // PULL_END_PCT (50%) pra atingir totalCapturedMsgs no exato instante
-  // em que a fase PULL termina e a barra cruza 50%. Após isso (LLM/
-  // FINALIZING) congela no total real enquanto a barra continua subindo.
-  // Resultado: contagem e barra crescem em sincronia visual — sem dois
-  // ritmos competindo.
-  let displayedMsgs;
-  if (phase === PHASE_PULL) {
-    const pullRatio = Math.min(1, pct / PULL_END_PCT);
-    displayedMsgs = Math.floor(totalCapturedMsgs * pullRatio);
-  } else {
-    displayedMsgs = totalCapturedMsgs;
-  }
-
-  let headline;
-  let subline;
-  if (phase === PHASE_PULL) {
-    headline = hasData ? 'Lendo suas conversas…' : 'Conectando ao WhatsApp…';
-    if (totalCapturedMsgs > 0) {
-      subline = `Lendo ${displayedMsgs.toLocaleString('pt-BR')} de ${totalCapturedMsgs.toLocaleString('pt-BR')} mensagens em ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'}.`;
-    } else if (chatCount > 0) {
-      subline = `Já vimos ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} no seu WhatsApp.`;
-    } else {
-      subline = 'Buscando a lista de conversas no seu WhatsApp.';
-    }
-  } else if (phase === PHASE_LLM) {
-    headline = 'IA analisando o conteúdo…';
-    subline = `Cruzando ${totalCapturedMsgs.toLocaleString('pt-BR')} mensagens de ${chatCount} ${chatCount === 1 ? 'conversa' : 'conversas'} pra gerar insights.`;
-  } else {
-    headline = 'Finalizando seu diagnóstico…';
-    subline = 'Montando funil, oportunidades perdidas e benchmarks.';
-  }
+  const seconds = Math.max(0, Math.round(elapsedMs / 1000));
 
   return (
     <div
@@ -172,7 +68,7 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
             lineHeight: 1.2,
           }}
         >
-          {headline}
+          Gerando seu relatório…
         </h1>
 
         <p
@@ -185,40 +81,9 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
             minHeight: 44,
           }}
         >
-          {subline}
+          Cruzando suas conversas pra montar funil, oportunidades e benchmarks.
+          Costuma levar entre 60 e 90 segundos.
         </p>
-
-        {/* Stats reais — só renderiza quando tem dados pra mostrar */}
-        {(chatCount > 0 || totalCapturedMsgs > 0) && (
-          <div
-            style={{
-              display: 'flex',
-              gap: 10,
-              justifyContent: 'center',
-              flexWrap: 'wrap',
-              marginBottom: 24,
-            }}
-          >
-            <StatPill
-              Icon={MessageCircle}
-              value={chatCount.toLocaleString('pt-BR')}
-              label={chatCount === 1 ? 'conversa' : 'conversas'}
-              highlight={phase === PHASE_PULL}
-            />
-            <StatPill
-              Icon={Wifi}
-              value={displayedMsgs.toLocaleString('pt-BR')}
-              label="mensagens"
-              highlight={phase === PHASE_PULL}
-            />
-            <StatPill
-              Icon={Brain}
-              value={phase === PHASE_LLM || phase === PHASE_FINALIZING ? '✓' : '…'}
-              label="IA"
-              highlight={phase === PHASE_LLM || phase === PHASE_FINALIZING}
-            />
-          </div>
-        )}
 
         <div
           style={{
@@ -227,13 +92,14 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
             borderRadius: 99,
             overflow: 'hidden',
             marginBottom: 12,
+            position: 'relative',
           }}
         >
           <div
+            className="anim-pulse-dot"
             style={{
               height: '100%',
-              width: `${pct}%`,
-              transition: 'width 1s linear',
+              width: '40%',
               background: `linear-gradient(90deg, ${COLORS.orangeDeep}, ${COLORS.orange})`,
               borderRadius: 99,
             }}
@@ -249,7 +115,7 @@ export default function ReportGeneratingState({ elapsedMs = 0 }) {
             fontWeight: 600,
           }}
         >
-          {pct}% · {Math.round(elapsedMs / 1000)}s
+          {seconds}s
         </div>
       </div>
     </div>

@@ -8,9 +8,11 @@
  * models there use `extra='forbid'` so any drift surfaces as HTTP 422
  * during smoke (T25).
  *
- * Post-pivot: the extension no longer talks to `/api/extension/pair`.
- * Auth is `/api/auth/login` and the extension stores the Supabase
- * session itself.
+ * Post-pivot (2026-05-24, 2nd iteration): the extension no longer has a
+ * login form. The session is silently picked up from the frontend's
+ * localStorage by a content script on `medzee-spy.vercel.app` and forwarded
+ * to the service worker via `medzee:session_sync`. Auth on
+ * `/api/extension/*` uses the standard Supabase access_token as Bearer.
  */
 
 // ─── HTTP wire types (mirror of backend Pydantic models) ───────────────
@@ -51,17 +53,20 @@ export interface ExtensionMessageBatch {
   messages: ExtensionMessage[];
 }
 
-/** Response shape of `POST /api/auth/login` (envelope already unwrapped). */
-export interface LoginResponse {
+/** Shape of the Supabase session picked up from the frontend's localStorage
+ *  by the probe content-script (`sb-<ref>-auth-token`). Forwarded to the
+ *  service worker via `medzee:session_sync`. */
+export interface SupabaseSessionSnapshot {
+  access_token: string;
+  refresh_token: string;
+  /** Absolute unix-seconds expiry. Supabase JS may omit this on older
+   *  formats — service worker computes from `expires_in` when missing. */
+  expires_at?: number;
+  /** Some Supabase JS versions populate this instead of `expires_at`. */
+  expires_in?: number;
   user: {
     id: string;
     email: string;
-  };
-  session: {
-    access_token: string;
-    refresh_token: string;
-    /** Seconds until the access_token expires. Convert at storage time. */
-    expires_in: number;
   };
 }
 
@@ -99,7 +104,12 @@ export interface ExtensionTelemetryEventPayload {
 
 export type MedzeeRuntimeMessage =
   | { type: "medzee:get_state" }
-  | { type: "medzee:login"; payload: { email: string; password: string } }
+  /** Sent by the probe content-script on the frontend domain whenever it
+   *  reads (or re-reads) the Supabase session from localStorage. `payload`
+   *  is `null` when the user is logged out on the site. */
+  | { type: "medzee:session_sync"; payload: SupabaseSessionSnapshot | null }
+  /** User-initiated "Sair" from the popup. Clears the cached session in
+   *  chrome.storage. Does NOT log the user out on the site. */
   | { type: "medzee:logout" }
   | { type: "medzee:start" }
   | { type: "medzee:abort" }

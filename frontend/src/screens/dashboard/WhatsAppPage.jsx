@@ -1,514 +1,216 @@
-// F4-T13 — WhatsApp connection state card.
+// F8 — Extension status page.
 //
-// Renders 4 visual states off useWhatsappStatus():
-//   1. loading            — skeleton placeholder, no flicker
-//   2. disconnected       — CTA pra /spy
-//   3. connected_no_messages — verde, aguardando
-//   4. connected_with_data   — verde + stats + warning se >24h sem msg
-// + estado de erro com card pequeno.
+// Substitui o card de QR/uazapi por status da extensão Chrome (única forma
+// suportada de ingerir conversas no M2+). Lê /api/extension/status (auth
+// Supabase JWT) e mostra:
+//   - paired=false → CTA pra baixar a extensão na Chrome Store
+//   - paired=true  → última coleta (count + timestamp) + howto
 
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import {
-  Wifi,
-  WifiOff,
-  CheckCircle,
-  AlertTriangle,
-  MessageCircle,
-  Power,
-} from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CheckCircle, AlertTriangle, Download, RefreshCw } from 'lucide-react';
 import { COLORS } from '../../constants/colors.js';
-import { useWhatsappStatus, useUazapiStats, disconnectWhatsapp } from '../../lib/whatsapp.js';
+import { callApi } from '../../lib/api.js';
 
-function formatRelative(isoDate) {
-  if (!isoDate) return '—';
-  const ms = Date.now() - new Date(isoDate).getTime();
-  const minutes = Math.floor(ms / 60_000);
-  const hours = Math.floor(ms / 3600_000);
-  const days = Math.floor(ms / 86400_000);
-  if (days >= 1) return `há ${days} ${days === 1 ? 'dia' : 'dias'}`;
-  if (hours >= 1) return `há ${hours} ${hours === 1 ? 'hora' : 'horas'}`;
-  if (minutes >= 1) return `há ${minutes} minutos`;
-  return 'há instantes';
-}
-
-function isStale(lastMessageAt) {
-  if (!lastMessageAt) return false;
-  return Date.now() - new Date(lastMessageAt).getTime() > 24 * 3600 * 1000;
-}
-
-function PageHeader() {
-  return (
-    <div style={{ marginBottom: 28 }}>
-      <h1
-        style={{
-          fontSize: 24,
-          fontWeight: 800,
-          color: COLORS.ink,
-          margin: 0,
-          letterSpacing: '-0.02em',
-        }}
-      >
-        Conexão WhatsApp
-      </h1>
-      <p style={{ fontSize: 14, color: COLORS.inkSoft, margin: 0, marginTop: 4 }}>
-        Status em tempo real da sua conexão e ingestão de mensagens
-      </p>
-    </div>
-  );
-}
-
-function LoadingCard() {
-  return (
-    <div
-      style={{
-        background: COLORS.paper,
-        border: `1px solid ${COLORS.hairline}`,
-        borderRadius: 16,
-        padding: 24,
-        minHeight: 220,
-        opacity: 0.5,
-      }}
-    >
-      <div
-        className="anim-pulse-dot"
-        style={{
-          width: 44,
-          height: 44,
-          borderRadius: 12,
-          background: COLORS.sunken,
-          marginBottom: 16,
-        }}
-      />
-      <div
-        style={{
-          width: '60%',
-          height: 18,
-          borderRadius: 6,
-          background: COLORS.sunken,
-          marginBottom: 12,
-        }}
-      />
-      <div
-        style={{
-          width: '85%',
-          height: 14,
-          borderRadius: 6,
-          background: COLORS.sunken,
-          marginBottom: 24,
-        }}
-      />
-      <div
-        style={{
-          width: '100%',
-          height: 48,
-          borderRadius: 12,
-          background: COLORS.sunken,
-        }}
-      />
-    </div>
-  );
-}
-
-function ErrorCard() {
-  return (
-    <div
-      style={{
-        background: COLORS.paper,
-        border: '1px solid rgba(229,96,77,0.25)',
-        borderRadius: 12,
-        padding: 16,
-        fontSize: 13.5,
-        color: COLORS.ink,
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: 10,
-      }}
-    >
-      <AlertTriangle size={18} color="#E5604D" style={{ flexShrink: 0, marginTop: 1 }} />
-      <span>Não foi possível carregar o status. Atualize a página.</span>
-    </div>
-  );
-}
-
-function DisconnectedCard({ dbStatus, lastSeenAt, messageCount, conversationCount }) {
-  const navigate = useNavigate();
-  // 3 estados visuais distintos baseados no histórico do DB:
-  //   - dbStatus null: usuário nunca conectou (UX onboarding)
-  //   - dbStatus consumed/disconnected: já conectou, sessão terminou
-  //     (UX reconnect + mostra histórico)
-  //   - dbStatus failed/expired: erro na sessão anterior (UX honesto)
-  const ENDED = new Set(['consumed', 'disconnected', 'failed', 'expired']);
-  const hadSession = dbStatus && ENDED.has(dbStatus);
-
-  let title;
-  let body;
-  let ctaLabel;
-
-  if (hadSession) {
-    const when = formatRelative(lastSeenAt);
-    title = 'WhatsApp desconectado';
-    if (dbStatus === 'consumed') {
-      body = (
-        <>
-          Sua última sessão foi encerrada {when !== '—' ? <>({when})</> : ''}.
-          {messageCount > 0 && (
-            <>
-              {' '}Temos <strong>{messageCount.toLocaleString('pt-BR')}</strong> mensagens
-              de <strong>{conversationCount.toLocaleString('pt-BR')}</strong> conversas
-              guardadas do período anterior.
-            </>
-          )}
-          {' '}Reconecte pra continuar coletando.
-        </>
-      );
-    } else if (dbStatus === 'failed' || dbStatus === 'expired') {
-      body = (
-        <>
-          Sessão anterior {dbStatus === 'failed' ? 'falhou' : 'expirou'} {when !== '—' && <>({when})</>}.
-          Reconecte pra retomar.
-        </>
-      );
-    } else {
-      body = <>Sessão desconectada {when !== '—' && <>({when})</>}. Reconecte pra retomar a coleta.</>;
-    }
-    ctaLabel = 'Reconectar WhatsApp';
-  } else if (dbStatus === 'pending') {
-    title = 'Conexão em andamento';
-    body = <>Sua sessão está em <strong>pending</strong>. Termine o scan do QR Code pra finalizar.</>;
-    ctaLabel = 'Continuar conexão';
-  } else {
-    title = 'WhatsApp não conectado';
-    body = <>Conecte seu WhatsApp pra começar a coletar conversas pra análise.</>;
-    ctaLabel = 'Conectar WhatsApp';
-  }
-
-  return (
-    <div
-      style={{
-        background: COLORS.paper,
-        border: `1px solid ${COLORS.hairline}`,
-        borderRadius: 16,
-        padding: 28,
-        textAlign: 'center',
-      }}
-    >
-      <div
-        style={{
-          width: 64,
-          height: 64,
-          borderRadius: 16,
-          background: COLORS.sunken,
-          color: COLORS.inkMute,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          margin: '0 auto 18px',
-        }}
-      >
-        <WifiOff size={30} />
-      </div>
-      <h2
-        style={{
-          fontSize: 18,
-          fontWeight: 700,
-          color: COLORS.ink,
-          margin: 0,
-          marginBottom: 8,
-          letterSpacing: '-0.01em',
-        }}
-      >
-        {title}
-      </h2>
-      <p
-        style={{
-          fontSize: 14,
-          color: COLORS.inkSoft,
-          lineHeight: 1.5,
-          margin: '0 auto 22px',
-          maxWidth: 420,
-        }}
-      >
-        {body}
-      </p>
-      <button
-        type="button"
-        onClick={() => navigate('/app/connect')}
-        className="flex items-center justify-center transition-all"
-        style={{
-          gap: 8,
-          margin: '0 auto',
-          padding: '12px 22px',
-          borderRadius: 12,
-          border: 'none',
-          background: `linear-gradient(135deg, ${COLORS.orange}, ${COLORS.orangeDeep})`,
-          color: '#fff',
-          fontSize: 14,
-          fontWeight: 600,
-          cursor: 'pointer',
-          fontFamily: "'Red Hat Display', sans-serif",
-          boxShadow: '0 6px 18px -8px rgba(255,107,53,0.6)',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.transform = 'translateY(-1px)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.transform = 'translateY(0)';
-        }}
-      >
-        <Wifi size={16} />
-        {ctaLabel}
-      </button>
-    </div>
-  );
-}
-
-function StatsGrid({ conversationCount, messageCount }) {
-  const cells = [
-    { label: 'conversas', value: conversationCount, Icon: MessageCircle },
-    {
-      label: 'mensagens',
-      value: messageCount.toLocaleString('pt-BR'),
-      Icon: MessageCircle,
-    },
-  ];
-  return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: 10,
-        marginBottom: 16,
-      }}
-    >
-      {cells.map(({ label, value, Icon }) => (
-        <div
-          key={label}
-          style={{
-            background: COLORS.sunken,
-            borderRadius: 12,
-            padding: 14,
-          }}
-        >
-          <div
-            className="flex items-center"
-            style={{ gap: 6, color: COLORS.inkMute, marginBottom: 4 }}
-          >
-            <Icon size={13} />
-            <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-              {label}
-            </span>
-          </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: COLORS.ink, letterSpacing: '-0.01em' }}>
-            {value}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function DisconnectButton({ onClick, disabled }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="flex items-center justify-center transition-all"
-      style={{
-        gap: 8,
-        width: '100%',
-        padding: 14,
-        borderRadius: 12,
-        border: `1px solid ${COLORS.hairline}`,
-        background: 'transparent',
-        color: COLORS.inkSoft,
-        fontSize: 14,
-        fontWeight: 600,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        fontFamily: "'Red Hat Display', sans-serif",
-        opacity: disabled ? 0.6 : 1,
-      }}
-      onMouseEnter={(e) => {
-        if (!disabled) e.currentTarget.style.background = COLORS.sunken;
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = 'transparent';
-      }}
-    >
-      <Power size={15} />
-      {disabled ? 'Desconectando…' : 'Desconectar'}
-    </button>
-  );
-}
-
-function ConnectedHeader({ title, subtitle }) {
-  return (
-    <div className="flex items-center" style={{ gap: 14, marginBottom: 18 }}>
-      <div
-        style={{
-          width: 48,
-          height: 48,
-          borderRadius: 12,
-          background: 'rgba(37,211,102,0.12)',
-          color: COLORS.wa,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0,
-        }}
-      >
-        <CheckCircle size={24} />
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            fontSize: 16,
-            fontWeight: 700,
-            color: COLORS.ink,
-            letterSpacing: '-0.01em',
-            lineHeight: 1.3,
-          }}
-        >
-          {title}
-        </div>
-        {subtitle && (
-          <div style={{ fontSize: 13, color: COLORS.inkSoft, marginTop: 3, lineHeight: 1.4 }}>
-            {subtitle}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function StaleWarning() {
-  return (
-    <div
-      style={{
-        background: 'rgba(232,179,60,0.1)',
-        border: '1px solid rgba(232,179,60,0.3)',
-        borderRadius: 12,
-        padding: 14,
-        marginBottom: 16,
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: 10,
-      }}
-    >
-      <AlertTriangle size={16} color={COLORS.gold} style={{ flexShrink: 0, marginTop: 1 }} />
-      <div style={{ fontSize: 13, color: COLORS.ink, lineHeight: 1.5 }}>
-        Sem novas mensagens há mais de 24h — verifique se o WhatsApp ainda está conectado.
-      </div>
-    </div>
-  );
-}
-
-function ConnectedCard({ status, uazapiStats, onDisconnect, disconnecting }) {
-  // Fontes:
-  //   - chatCount: uazapi /chat/find totalChatsStats.total_chats (ao vivo)
-  //   - messageCount: captured_messages.stats_for_session (snapshot local,
-  //     soma de TUDO que o webhook persistiu). uazapi free NÃO retorna
-  //     total_messages no totalChatsStats — então confiar no nosso DB é a
-  //     única opção. Bug observado 2026-05-19: front mostrava "0 mensagens"
-  //     mesmo com 8.6k msgs em captured_messages porque lia do source errado.
-  const chatCount = uazapiStats?.stats?.chat_count ?? 0;
-  const messageCount = status?.message_count ?? 0;
-  const hasMessages = messageCount > 0;
-  const stale = hasMessages && isStale(status.last_message_at);
-
-  const title = hasMessages
-    ? 'WhatsApp conectado'
-    : 'WhatsApp conectado · aguardando primeiras mensagens';
-
-  const subtitleParts = [`Conectado ${formatRelative(status.connected_since)}`];
-  if (hasMessages) {
-    subtitleParts.push(`última mensagem ${formatRelative(status.last_message_at)}`);
-  } else {
-    subtitleParts.push('Cada nova mensagem aparece aqui em tempo real.');
-  }
-  const subtitle = subtitleParts.join(' · ');
-
-  return (
-    <div
-      style={{
-        background: COLORS.paper,
-        border: '1px solid rgba(37,211,102,0.3)',
-        borderRadius: 16,
-        padding: 24,
-      }}
-    >
-      <ConnectedHeader title={title} subtitle={subtitle} />
-      <StatsGrid conversationCount={chatCount} messageCount={messageCount} />
-      {stale && <StaleWarning />}
-      {uazapiStats?.error && !uazapiStats?.stats && (
-        <div
-          style={{
-            fontSize: 12,
-            color: COLORS.inkMute,
-            marginBottom: 12,
-            paddingLeft: 4,
-          }}
-        >
-          Atualizando contagens…
-        </div>
-      )}
-      <DisconnectButton onClick={onDisconnect} disabled={disconnecting} />
-    </div>
-  );
-}
+const CHROME_STORE_URL = 'https://chrome.google.com/webstore/detail/medzee-spy/PENDING_ID';
 
 export default function WhatsAppPage() {
-  const { loading, status, error } = useWhatsappStatus();
-  const isConnected = !!status?.connected;
-  const uazapiStats = useUazapiStats({ enabled: isConnected });
-  const [disconnecting, setDisconnecting] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const handleDisconnect = async () => {
-    if (!status?.session_id) return;
-    const ok = window.confirm(
-      'Desconectar o WhatsApp? A coleta de novas mensagens será pausada.'
-    );
-    if (!ok) return;
-    setDisconnecting(true);
+  async function load() {
+    setLoading(true);
+    setError(null);
     try {
-      await disconnectWhatsapp(status.session_id);
+      const res = await callApi('/api/extension/status', { auth: true });
+      setStatus(res);
     } catch (e) {
-      window.alert('Não foi possível desconectar. Tente novamente.');
+      setError(e);
     } finally {
-      setDisconnecting(false);
+      setLoading(false);
     }
-  };
-
-  let content;
-  if (loading && !status) {
-    content = <LoadingCard />;
-  } else if (error && !status) {
-    content = <ErrorCard />;
-  } else if (!status || !status.connected) {
-    content = (
-      <DisconnectedCard
-        dbStatus={status?.db_status ?? null}
-        lastSeenAt={status?.last_seen_at ?? null}
-        messageCount={status?.message_count ?? 0}
-        conversationCount={status?.conversation_count ?? 0}
-      />
-    );
-  } else {
-    content = (
-      <ConnectedCard
-        status={status}
-        uazapiStats={uazapiStats}
-        onDisconnect={handleDisconnect}
-        disconnecting={disconnecting}
-      />
-    );
   }
 
+  useEffect(() => {
+    // Inicial fetch — wrap em IIFE async pra não retornar a Promise pro
+    // cleanup (e silenciar o react-hooks/set-state-in-effect, já que o
+    // setState ocorre dentro de um callback async, não no body do effect).
+    let alive = true;
+    (async () => {
+      try {
+        const res = await callApi('/api/extension/status', { auth: true });
+        if (alive) {
+          setStatus(res);
+          setError(null);
+        }
+      } catch (e) {
+        if (alive) setError(e);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (loading) {
+    return <div style={{ padding: 24, color: COLORS.inkMute }}>Carregando…</div>;
+  }
+
+  const paired = !!status?.paired;
+  const lastAt = status?.last_collection_at;
+  const lastCount = status?.last_collection_message_count ?? 0;
+
   return (
-    <div style={{ maxWidth: 600 }}>
-      <PageHeader />
-      {content}
+    <div style={{ maxWidth: 760, padding: 32 }}>
+      <header style={{ marginBottom: 28 }}>
+        <h1
+          style={{
+            fontSize: 24,
+            fontWeight: 800,
+            color: COLORS.ink,
+            margin: 0,
+            letterSpacing: '-0.02em',
+          }}
+        >
+          Extensão Medzee Spy
+        </h1>
+        <p style={{ fontSize: 14, color: COLORS.inkMute, marginTop: 8 }}>
+          Status da extensão Chrome que lê seu WhatsApp Web e envia ao Medzee Spy.
+        </p>
+      </header>
+
+      {error && (
+        <div
+          style={{
+            background: 'rgba(229,96,77,0.08)',
+            border: '1px solid rgba(229,96,77,0.25)',
+            borderRadius: 12,
+            padding: 16,
+            marginBottom: 20,
+            color: COLORS.wine,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
+          <AlertTriangle size={18} />
+          Erro ao carregar status.
+          <button
+            type="button"
+            onClick={load}
+            style={{
+              marginLeft: 'auto',
+              color: COLORS.orangeDeep,
+              textDecoration: 'underline',
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              fontFamily: "'Red Hat Display', sans-serif",
+              fontSize: 13,
+            }}
+          >
+            Tentar de novo
+          </button>
+        </div>
+      )}
+
+      <div
+        style={{
+          background: COLORS.paper,
+          border: `1px solid ${COLORS.hairline}`,
+          borderRadius: 16,
+          padding: 24,
+          marginBottom: 16,
+        }}
+      >
+        <div className="flex items-center justify-between" style={{ marginBottom: 16 }}>
+          <div className="flex items-center" style={{ gap: 12 }}>
+            {paired ? (
+              <CheckCircle size={24} color={COLORS.wa} />
+            ) : (
+              <AlertTriangle size={24} color={COLORS.orange} />
+            )}
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.ink }}>
+                {paired ? 'Extensão conectada' : 'Extensão não configurada'}
+              </div>
+              <div style={{ fontSize: 13, color: COLORS.inkMute, marginTop: 4 }}>
+                {paired
+                  ? lastAt
+                    ? `Última análise: ${lastCount} mensagens em ${new Date(lastAt).toLocaleString('pt-BR')}`
+                    : 'Pronta pra rodar a primeira análise'
+                  : 'Instale a extensão Chrome pra começar.'}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={load}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '8px 14px',
+              background: 'transparent',
+              border: `1px solid ${COLORS.hairline}`,
+              borderRadius: 8,
+              fontSize: 13,
+              color: COLORS.ink,
+              cursor: 'pointer',
+              fontFamily: "'Red Hat Display', sans-serif",
+            }}
+          >
+            <RefreshCw size={14} />
+            Atualizar
+          </button>
+        </div>
+      </div>
+
+      {!paired && (
+        <a
+          href={CHROME_STORE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '12px 20px',
+            background: COLORS.orange,
+            color: COLORS.cream,
+            borderRadius: 12,
+            fontSize: 14,
+            fontWeight: 700,
+            textDecoration: 'none',
+          }}
+        >
+          <Download size={16} />
+          Baixar extensão
+        </a>
+      )}
+
+      {paired && (
+        <div
+          style={{
+            padding: 16,
+            background: 'rgba(37,211,102,0.08)',
+            border: '1px solid rgba(37,211,102,0.2)',
+            borderRadius: 12,
+            fontSize: 13,
+            color: COLORS.ink,
+          }}
+        >
+          <strong>Como gerar uma análise:</strong>
+          <ol style={{ marginTop: 8, paddingLeft: 20, lineHeight: 1.6 }}>
+            <li>Clique no ícone Medzee Spy na barra do Chrome</li>
+            <li>Click em "Abrir WhatsApp Web" — faça login lá se necessário</li>
+            <li>Volte na extensão e click em "Iniciar análise"</li>
+            <li>Aguarde ~60-90s. O relatório aparece em Relatórios.</li>
+          </ol>
+        </div>
+      )}
     </div>
   );
 }
