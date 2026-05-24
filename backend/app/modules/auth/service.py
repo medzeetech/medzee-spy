@@ -32,6 +32,7 @@ from app.modules.auth.schemas import (
     UpdateMeRequest,
     UserPayload,
 )
+from app.modules.extension.security import issue_pairing_token
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +298,14 @@ class AuthService:
         session = _session_payload_from(getattr(sign_in_response, "session"))
         user_payload = _user_payload_from(getattr(sign_in_response, "user", auth_user))
 
+        # Step 7 — F8 / CHX-01: emit the short-lived extension pairing token.
+        # The frontend stuffs it in ``window.medzee_spy`` so the Chrome
+        # extension probe can trade it for a refresh token via
+        # ``POST /api/extension/pair``. Failures here would only land if the
+        # JWT secret is unconfigured — let the RuntimeError bubble so the
+        # deploy is flagged loudly rather than silently degrade.
+        extension_pairing_token = issue_pairing_token(user_id)
+
         logger.info(
             "service.auth.signup.exit",
             extra={
@@ -312,6 +321,7 @@ class AuthService:
             session=session,
             report_pending=report_pending,
             session_warning=session_warning,
+            extension_pairing_token=extension_pairing_token,
         )
 
     # ── Login ─────────────────────────────────────────────────────────

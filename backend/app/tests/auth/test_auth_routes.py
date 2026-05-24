@@ -114,6 +114,7 @@ def fake_service() -> MagicMock:
             session=_session_payload(),
             report_pending=False,
             session_warning=None,
+            extension_pairing_token="ext-pairing-tok-test",
         ),
     )
     svc.login = AsyncMock(
@@ -166,6 +167,9 @@ def test_post_signup_happy_path(client: TestClient, fake_service: MagicMock) -> 
     assert data["session"]["token_type"] == "bearer"
     assert data["report_pending"] is False
     assert data["session_warning"] is None
+    # F8 / CHX-01 — signup envelope must surface the pairing JWT so the
+    # frontend can hand it off to the Chrome extension.
+    assert data["extension_pairing_token"] == "ext-pairing-tok-test"
     fake_service.signup.assert_awaited_once()
 
 

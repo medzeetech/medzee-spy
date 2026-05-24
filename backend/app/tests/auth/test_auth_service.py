@@ -132,6 +132,13 @@ async def test_signup_happy_path(
     assert resp.user.id == TEST_USER_ID
     assert resp.session.access_token == "access_tok_test"
 
+    # F8 / CHX-01: signup emits a short-lived extension pairing JWT and
+    # the helper resolves the same user_id we just provisioned.
+    assert resp.extension_pairing_token, "expected non-empty pairing token"
+    from app.modules.extension.security import decode_pairing_token
+
+    assert decode_pairing_token(resp.extension_pairing_token) == TEST_USER_ID
+
 
 async def test_signup_normalizes_email(
     fake_supabase_admin: MagicMock,

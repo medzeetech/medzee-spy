@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,10 +22,29 @@ class Settings(BaseSettings):
     SUPABASE_KEY: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
 
-    # WhatsApp via uazapi.com (D1).
+    # WhatsApp provider flag (F8 / D11). Default 'extension' (Chrome MV3
+    # extension reads WhatsApp Web on the user's browser). Set to 'uazapi'
+    # to roll back to the legacy SaaS provider (F1-F5).
+    WHATSAPP_PROVIDER: Literal["extension", "uazapi"] = "extension"
+
+    # WhatsApp via uazapi.com (D1, legacy when WHATSAPP_PROVIDER=extension).
     UAZAPI_BASE_URL: str = ""
     UAZAPI_ADMIN_TOKEN: str = ""
     UAZAPI_HTTP_TIMEOUT_S: float = 8.0
+
+    # F8: Chrome extension tuning.
+    # Pairing token TTL (curto: user precisa instalar a extensão em ~15min).
+    EXTENSION_PAIRING_TOKEN_TTL_S: int = 15 * 60
+    # Refresh token TTL (longo: extensão fica autenticada 30d).
+    EXTENSION_REFRESH_TOKEN_TTL_S: int = 30 * 24 * 60 * 60
+    # Versão mínima aceita da extensão (CHX-14). Floor: 1.0.0.
+    EXTENSION_MIN_VERSION: str = "1.0.0"
+    # Telemetry rate-limit (eventos por minuto por user, CHX-16).
+    EXTENSION_TELEMETRY_RATE_PER_MINUTE: int = 60
+    # JWT secret for extension pairing/refresh tokens (HS256). Required when
+    # F8 endpoints are live. Default empty allows local dev / tests to seed it
+    # via env or monkeypatch; production deploys must set this explicitly.
+    SUPABASE_JWT_SECRET: str = ""
 
     # LLM provider — default Anthropic Claude (D2).
     LLM_PROVIDER: str = "anthropic"

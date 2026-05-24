@@ -2,8 +2,10 @@
 
 Exports:
     - ``WhatsAppProvider`` — structural Protocol every adapter must satisfy.
-    - ``get_provider()`` — lazy factory returning the configured adapter
-      (currently :class:`app.clients.whatsapp.uazapi.UazapiProvider`).
+    - ``get_provider()`` — lazy factory returning the configured adapter,
+      dispatched on :data:`app.core.config.settings.WHATSAPP_PROVIDER`
+      (``extension`` → :class:`app.clients.whatsapp.extension.ExtensionProvider`,
+      ``uazapi`` → :class:`app.clients.whatsapp.uazapi.UazapiProvider`).
 
 The factory uses a deferred import so the heavy `httpx`-backed adapter is
 only instantiated when actually needed, and so this module remains
@@ -86,11 +88,24 @@ class WhatsAppProvider(Protocol):
 def get_provider() -> WhatsAppProvider:
     """Return the configured provider instance.
 
+    Reads :data:`app.core.config.settings.WHATSAPP_PROVIDER` at call-time
+    (so tests can flip it via ``monkeypatch.setattr``) and dispatches:
+
+      - ``"extension"`` → :class:`.extension.ExtensionProvider` (F8 default).
+      - ``"uazapi"`` → :class:`.uazapi.UazapiProvider` (legacy, F1-F5).
+
     Imports lazily so that:
       1. This module stays cheap to import (no eager ``httpx`` init).
-      2. ``WhatsAppProvider`` / static typing keeps working even if
-         ``uazapi.py`` hasn't been written yet.
+      2. ``WhatsAppProvider`` / static typing keeps working even if a given
+         adapter file hasn't been written yet.
     """
+    from app.core.config import settings  # noqa: WPS433
+
+    if settings.WHATSAPP_PROVIDER == "extension":
+        from app.clients.whatsapp.extension import ExtensionProvider  # noqa: WPS433
+
+        return ExtensionProvider()
+
     from app.clients.whatsapp.uazapi import UazapiProvider  # noqa: WPS433
 
     return UazapiProvider()

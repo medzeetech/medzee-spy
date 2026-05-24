@@ -21,11 +21,22 @@ from uuid import UUID, uuid4
 import pytest
 from supabase import Client
 
+from app.core.config import settings
 from app.modules.auth.schemas import SignupRequest
 
 
 # Stable test UUID — keeps assertions deterministic across runs.
 TEST_USER_ID = UUID("11111111-1111-1111-1111-111111111111")
+
+# F8: signup now emits an extension_pairing_token via
+# ``app.modules.extension.security.issue_pairing_token``, which requires
+# a non-empty ``SUPABASE_JWT_SECRET``. Autouse so every auth test inherits.
+_TEST_JWT_SECRET = "test-jwt-secret-auth-conftest-0123456789"
+
+
+@pytest.fixture(autouse=True)
+def _configure_jwt_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "SUPABASE_JWT_SECRET", _TEST_JWT_SECRET)
 
 
 # ─── Supabase admin client ─────────────────────────────────────────────

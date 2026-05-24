@@ -88,6 +88,7 @@ def _serialize(item: CapturedMessageInsert) -> dict[str, Any]:
         "message_type": item.message_type,
         "text": item.text,
         "raw_message_id": item.raw_message_id,
+        "source": item.source,
     }
 
 

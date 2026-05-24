@@ -26,6 +26,13 @@ MessageType = Literal[
 ]
 
 
+# F8: origem da captura. ``webhook`` é o legado uazapi (compat F4); ``extension``
+# vem do Chrome extension push (ingest direto via API autenticada). Default no
+# Postgres é ``webhook`` pra não quebrar nenhum insert existente. CHECK
+# constraint em DB garante esses dois únicos valores.
+MessageSource = Literal["webhook", "extension"]
+
+
 # Períodos permitidos pro relatório on-demand (F4-11, legado window_days).
 ReportPeriodDays = Literal[7, 15, 30, 60]
 
@@ -55,6 +62,7 @@ class CapturedMessage(BaseModel):
     message_type: str = "text"
     text: str | None = None
     raw_message_id: str | None = None
+    source: MessageSource = "webhook"
     created_at: datetime
 
 
@@ -74,6 +82,7 @@ class CapturedMessageInsert(BaseModel):
     message_type: MessageType = "text"
     text: str | None = None
     raw_message_id: str | None = None
+    source: MessageSource = "webhook"
 
 
 # ─── HTTP responses ─────────────────────────────────────────────────
@@ -132,6 +141,7 @@ __all__ = [
     "GenerateReportRequest",
     "GenerateReportResponse",
     "MessageType",
+    "MessageSource",
     "ReportPeriodDays",
     "ReportMode",
     "ReportNPerChat",

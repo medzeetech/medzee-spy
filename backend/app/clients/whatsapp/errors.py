@@ -51,3 +51,14 @@ class UazapiUnknown(UazapiError):
     """4xx not otherwise classified."""
 
     code = "unknown"
+
+
+class ProviderNotApplicable(Exception):
+    """F8: raised when a provider-specific method is called on the wrong adapter.
+
+    Used by ``ExtensionProvider`` to short-circuit uazapi-only operations
+    (QR generation, /chat/find, etc.) — the extension reads WhatsApp Web
+    directly in the user's browser, so the backend has no equivalent.
+    """
+
+    code: str = "provider_not_applicable"
