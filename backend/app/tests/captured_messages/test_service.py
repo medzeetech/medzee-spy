@@ -21,8 +21,8 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.modules.captured_messages.schemas import CapturedMessage
+from app.modules.reports.schemas import ExtractedPayload
 from app.modules.reports.service import _build_extracted_payload
-from app.modules.whatsapp.schemas import ExtractedPayload
 
 
 # --------------------------------------------------------------------------- #

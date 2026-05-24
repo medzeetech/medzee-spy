@@ -1,15 +1,18 @@
 """Auth service — signup, login, profile orchestration (F2).
 
-T7 fills in :class:`AuthService` (signup/login/me/update_me + the F1 bridge).
-The exception hierarchy lives at the top of this file so routes (T8) and
-tests (T11/T12) can import the right types regardless of import order.
-
-Logging policy mirrors the F1 service:
+Logging policy:
 
 * ``op``, ``user_id`` (UUID, safe), ``email_domain``, ``status``, ``elapsed_ms``
   are emitted on entry/exit.
 * ``password``, ``access_token``, ``refresh_token``, and full ``email`` are
   **never** logged. Supabase responses are not echoed.
+
+F8 cutover note: the legacy F1 signup→WhatsApp-session bridge was
+removed when the Chrome extension became the sole ingestion path. The
+synthetic ``whatsapp_sessions`` row used as FK target for
+``captured_messages`` is now provisioned lazily by
+:func:`app.modules.extension.repository.get_or_create_extension_session`
+on the first authenticated extension ingest call.
 """
 from __future__ import annotations
 
@@ -157,19 +160,18 @@ class AuthService:
     # ── Signup ────────────────────────────────────────────────────────
 
     async def signup(self, req: SignupRequest) -> SignupResponse:
-        """Create an auth user + profile + (optional) link a WhatsApp session.
+        """Create an auth user + profile.
 
-        Sequence (AUTH-01..AUTH-10):
+        Sequence (AUTH-01..AUTH-10, post-F8):
             1. Normalize email.
             2. ``auth.admin.create_user(email_confirm=True)`` — bypasses the
                email confirmation flow so the user is immediately usable.
             3. Merge ``'spy'`` into ``app_metadata.projects``.
             4. ``repository.create_profile`` — on failure, delete the auth
                user (best-effort) and raise :class:`ProfileCreationFailed`.
-            5. ``_maybe_consume_whatsapp_session`` — non-fatal: failures only
-               populate ``session_warning``.
-            6. ``auth.sign_in_with_password`` to mint a session pair the
+            5. ``auth.sign_in_with_password`` to mint a session pair the
                frontend can stuff into ``supabase.auth.setSession``.
+            6. Emit the short-lived extension pairing token (CHX-01).
             7. Return the envelope.
         """
         started = time.monotonic()
@@ -250,34 +252,7 @@ class AuthService:
             )
             raise ProfileCreationFailed(str(user_id)) from exc
 
-        # Step 4b — F4-07: link user_id em SessionStore in-memory pra o
-        # webhook ``messages`` da uazapi conseguir atribuir cada msg nova
-        # ao usuário recém-criado. Lazy import + best-effort: se falhar,
-        # signup ainda completa; só perdemos captura até o user
-        # reconectar.
-        if req.whatsapp_session_id is not None:
-            try:
-                from app.modules.whatsapp.state import session_store
-                await session_store.update(
-                    req.whatsapp_session_id, user_id=user_id
-                )
-            except Exception:
-                logger.warning(
-                    "service.auth.signup.session_store_link_failed",
-                    extra={
-                        "op": "signup",
-                        "user_id": str(user_id),
-                        "session_id": str(req.whatsapp_session_id),
-                    },
-                    exc_info=True,
-                )
-
-        # Step 5 — bridge with F1 (non-fatal).
-        report_pending, session_warning = await self._maybe_consume_whatsapp_session(
-            req.whatsapp_session_id, user_id
-        )
-
-        # Step 6 — sign in to obtain session tokens.
+        # Step 5 — sign in to obtain session tokens.
         try:
             sign_in_response = self._supabase.auth.sign_in_with_password(
                 {"email": email, "password": req.password}
@@ -298,7 +273,7 @@ class AuthService:
         session = _session_payload_from(getattr(sign_in_response, "session"))
         user_payload = _user_payload_from(getattr(sign_in_response, "user", auth_user))
 
-        # Step 7 — F8 / CHX-01: emit the short-lived extension pairing token.
+        # Step 6 — F8 / CHX-01: emit the short-lived extension pairing token.
         # The frontend stuffs it in ``window.medzee_spy`` so the Chrome
         # extension probe can trade it for a refresh token via
         # ``POST /api/extension/pair``. Failures here would only land if the
@@ -311,16 +286,12 @@ class AuthService:
             extra={
                 "op": "signup",
                 "user_id": str(user_id),
-                "report_pending": report_pending,
-                "session_warning": session_warning,
                 "elapsed_ms": int((time.monotonic() - started) * 1000),
             },
         )
         return SignupResponse(
             user=user_payload,
             session=session,
-            report_pending=report_pending,
-            session_warning=session_warning,
             extension_pairing_token=extension_pairing_token,
         )
 
@@ -413,45 +384,6 @@ class AuthService:
         return await self.get_me(user_id)
 
     # ── Internals ─────────────────────────────────────────────────────
-
-    async def _maybe_consume_whatsapp_session(
-        self, session_id: UUID | None, user_id: UUID
-    ) -> tuple[bool, str | None]:
-        """Return ``(report_pending, session_warning)``.
-
-        ``None`` for the session id is a happy-path no-op (signup without a
-        prior /spy run). Any other failure surfaces as a warning string but
-        does **not** raise — signup must complete even if the F1 link fails.
-
-        Lazy-imports :mod:`app.modules.whatsapp.service` to avoid an import
-        cycle (whatsapp.service may one day import auth helpers).
-        """
-        if session_id is None:
-            return (False, None)
-        try:
-            from app.modules.whatsapp.service import get_service as get_whatsapp_service
-        except ImportError:
-            logger.warning(
-                "service.auth.signup.whatsapp_module_missing",
-                extra={"op": "signup", "user_id": str(user_id)},
-            )
-            return (False, "whatsapp_session_unavailable")
-
-        try:
-            wpp = get_whatsapp_service()
-            payload = await wpp.consume_extracted(session_id, user_id)
-            return (payload is not None, None)
-        except Exception:
-            logger.warning(
-                "service.auth.signup.consume_whatsapp_failed",
-                extra={
-                    "op": "signup",
-                    "user_id": str(user_id),
-                    "session_id": str(session_id),
-                },
-                exc_info=True,
-            )
-            return (False, "whatsapp_session_unavailable")
 
     @staticmethod
     def _merge_projects(app_metadata: Any, new: str) -> dict[str, Any]:

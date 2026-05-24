@@ -22,13 +22,11 @@ from app.modules.reports.metrics import (
     compute_score,
 )
 from app.modules.reports.schemas import (
-    FunnelStage,
-    ResponseTimeBucket,
-)
-from app.modules.whatsapp.schemas import (
     ConversationPayload,
     ExtractedPayload,
+    FunnelStage,
     MessagePayload,
+    ResponseTimeBucket,
 )
 
 TZ_SP = ZoneInfo("America/Sao_Paulo")

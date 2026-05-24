@@ -34,6 +34,44 @@ class ReportStatus(str, Enum):
     FAILED = "failed"
 
 
+# ─── Input models (captured conversations → LLM pipeline) ─────────────
+#
+# These shapes live here (rather than in their own module) because they are
+# consumed exclusively by the reports pipeline: metrics / sampling / prompts
+# / worker / service all read ``ExtractedPayload`` and emit insights from it.
+# The wire payload the Chrome extension POSTs to ``/api/extension/ingest`` is
+# a *different* shape (see ``app.modules.extension.schemas``) — these models
+# live on the read side, between ``captured_messages`` rows and the LLM.
+
+
+class MessagePayload(BaseModel):
+    """One message inside a conversation, ready for the LLM context."""
+
+    ts: int                       # unix seconds
+    from_me: bool
+    type: str                     # "text" | "image" | "audio" | ... (free-form)
+    text: str                     # always present (None → "" upstream)
+
+
+class ConversationPayload(BaseModel):
+    """One conversation (chat) bundled with its sorted messages."""
+
+    wa_chatid: str
+    contact_name: str
+    is_group: bool
+    last_message_at: int | None
+    messages: list[MessagePayload]
+
+
+class ExtractedPayload(BaseModel):
+    """Bundle of conversations + messages handed to the report worker."""
+
+    message_count: int
+    conversation_count: int
+    conversations: list[ConversationPayload]
+    partial: bool = False         # True if the source data was incomplete
+
+
 # ─── Sub-models (UI sections) ─────────────────────────────────────────
 
 

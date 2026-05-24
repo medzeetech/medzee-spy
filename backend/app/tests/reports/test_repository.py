@@ -9,7 +9,7 @@ Patch target note: ``repository.py`` does
 ``from app.clients.supabase import get_supabase_admin_client`` at import
 time, so the bound name lives in the repository namespace — we monkeypatch
 ``app.modules.reports.repository.get_supabase_admin_client`` directly
-(mirrors the pattern in ``app/tests/whatsapp/test_repository.py``).
+(MagicMock auto-vivifies the rest of the chain).
 """
 from __future__ import annotations
 

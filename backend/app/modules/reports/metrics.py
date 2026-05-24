@@ -26,14 +26,12 @@ from zoneinfo import ZoneInfo
 
 from app.modules.reports._keywords import KW_BOOKED, KW_VALUE
 from app.modules.reports.schemas import (
-    FunnelStage,
-    HeatmapPeriod,
-    ResponseTimeBucket,
-)
-from app.modules.whatsapp.schemas import (
     ConversationPayload,
     ExtractedPayload,
+    FunnelStage,
+    HeatmapPeriod,
     MessagePayload,
+    ResponseTimeBucket,
 )
 
 # ─── Constants ───────────────────────────────────────────────────────────

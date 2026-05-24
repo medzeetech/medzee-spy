@@ -26,19 +26,20 @@ MessageType = Literal[
 ]
 
 
-# F8: origem da captura. ``webhook`` é o legado uazapi (compat F4); ``extension``
-# vem do Chrome extension push (ingest direto via API autenticada). Default no
-# Postgres é ``webhook`` pra não quebrar nenhum insert existente. CHECK
-# constraint em DB garante esses dois únicos valores.
+# F8: origem da captura. ``extension`` vem do Chrome extension push (ingest
+# direto via API autenticada). ``webhook`` permanece no enum apenas pra ler
+# rows legadas históricas (capturadas pelo provedor SaaS antigo antes do
+# cutover). Inserts novos sempre usam ``extension``. CHECK constraint em DB
+# garante esses dois únicos valores.
 MessageSource = Literal["webhook", "extension"]
 
 
 # Períodos permitidos pro relatório on-demand (F4-11, legado window_days).
 ReportPeriodDays = Literal[7, 15, 30, 60]
 
-# F5: estratégia de coleta. ``last_n_per_chat`` é o default novo —
-# pega as últimas N msgs de cada conversa, sem janela temporal. Funciona
-# em qualquer tier uazapi. ``window_days`` mantido pra compat.
+# F5: estratégia de coleta. ``last_n_per_chat`` é o default —
+# pega as últimas N msgs de cada conversa, sem janela temporal.
+# ``window_days`` mantido pra compat com clientes legados.
 ReportMode = Literal["last_n_per_chat", "window_days"]
 
 # F5: valores permitidos pra n_per_chat. Limitado pra controlar custo LLM:
@@ -67,7 +68,7 @@ class CapturedMessage(BaseModel):
 
 
 class CapturedMessageInsert(BaseModel):
-    """Normalized payload produced by the uazapi webhook parser.
+    """Normalized payload produced by the extension ingest endpoint.
 
     No ``id`` / ``created_at`` because the DB assigns those. The
     repository ``insert_many`` consumes this shape directly.
@@ -116,7 +117,7 @@ class GenerateReportRequest(BaseModel):
     """Body of ``POST /api/reports/generate`` (F4-11 + F5).
 
     Default novo (F5): ``mode='last_n_per_chat'``, ``n_per_chat=30``.
-    Funciona em qualquer tier uazapi e gera relatório sempre.
+    Gera relatório sempre — mesmo com sample pequena.
 
     Compat: clientes antigos podem mandar só ``period_days=N``; nesse
     caso o backend usa ``mode='window_days'`` automaticamente.

@@ -4,8 +4,9 @@ Tables touched (all in schema ``medzee_spy``):
 
 * ``extension_installs``     — one row per (device, user) pairing.
 * ``whatsapp_sessions``      — synthetic row with ``provider='extension'``,
-  ``uazapi_token IS NULL``, ``status='connected'`` (FK target for
-  ``captured_messages``).
+  ``status='connected'`` (FK target for ``captured_messages``). The legacy
+  provider-token column on this table is nullable post-F8 and left NULL
+  for extension-sourced rows.
 * ``extension_telemetry``    — no-PII operational events (CHX-16).
 * ``mobile_redirect_leads``  — ANON-writable lead capture from the mobile
   block screen.
@@ -198,8 +199,8 @@ async def get_or_create_extension_session(user_id: UUID) -> UUID:
 
     Selects the row with ``user_id = ? AND provider = 'extension'``. If
     none exists, INSERTs a synthetic row with ``status='connected'`` and
-    ``uazapi_token=NULL`` (allowed since migration ``f8_1`` dropped the
-    NOT NULL there). The unique partial index
+    the legacy provider-token column left NULL (allowed since migration
+    ``f8_1`` dropped the NOT NULL there). The unique partial index
     ``ux_whatsapp_sessions_extension_per_user`` guarantees at most one
     per user.
 
@@ -227,11 +228,12 @@ async def get_or_create_extension_session(user_id: UUID) -> UUID:
         )
         return sid
 
+    # The legacy provider-token column is nullable post-F8; we omit it from
+    # the INSERT so Postgres applies the column default (NULL).
     new_row = {
         "user_id": user_id_str,
         "provider": "extension",
         "status": "connected",
-        "uazapi_token": None,
     }
 
     def _insert() -> Any:

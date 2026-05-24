@@ -1,21 +1,20 @@
-"""F4-T7: Background TTL cleanup worker for ``captured_messages``.
+"""Background TTL cleanup worker for ``medzee_spy.captured_messages``.
 
-This worker periodically scans for WhatsApp sessions that have been in
-``status='disconnected'`` for more than ``CAPTURED_MESSAGES_TTL_DAYS`` days
-(default 30) and deletes the linked ``captured_messages`` rows.
+After F8 (Chrome extension is the sole ingestion path), retention is
+governed by a **rolling window**: any captured message older than
+``CAPTURED_MESSAGES_TTL_DAYS`` (default 30) is hard-deleted regardless of
+its parent WhatsApp session state. The legacy delete-on-session-disconnect
+flow no longer applies — the extension's synthetic session row stays
+``connected`` for the user's whole tenure.
 
-Design notes (mirrors ``SessionStore._expire_loop`` for pattern parity):
+Design notes:
 
-* ``_run_once()`` is intentionally standalone-callable — tests (T20) will
-  invoke it directly without driving the loop, and the env var read happens
+* ``_run_once()`` is intentionally standalone-callable so tests can
+  invoke it directly without driving the loop. The env var read happens
   at call-time so ``monkeypatch.setenv`` works.
 * The loop catches every non-cancellation exception so a transient bug
   (e.g. DB hiccup) never kills the worker. Cancellation propagates as
   expected on shutdown.
-* TTL gating relies on ``whatsapp_sessions.updated_at`` (kept fresh by the
-  DB trigger) plus a strict ``status='disconnected'`` filter — see the
-  ``find_disconnected_before`` repo docstring for why ``expired/failed/
-  consumed`` are intentionally excluded.
 """
 from __future__ import annotations
 
@@ -39,35 +38,42 @@ _RUN_INTERVAL_S: float = 24 * 3600.0   # 1x por dia
 
 
 async def _run_once() -> dict:
-    """Performs one full cleanup pass. Returns stats dict for logging/tests."""
-    from app.modules.whatsapp import repository as whatsapp_repo
-    from app.modules.captured_messages import repository as captured_repo
+    """Performs one full cleanup pass. Returns stats dict for logging/tests.
+
+    Deletes every ``captured_messages`` row whose ``ts`` is older than the
+    rolling cutoff (``now - TTL_DAYS``). Uses the Supabase admin client so
+    RLS is bypassed — captured rows are written via service_role too.
+    """
+    from app.clients.supabase import get_supabase_admin_client
 
     ttl_days = _ttl_days()
     cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
-    expired_sessions = await whatsapp_repo.find_disconnected_before(cutoff)
-    total_deleted = 0
-    for session_id in expired_sessions:
-        deleted = await captured_repo.delete_for_session(session_id)
-        total_deleted += deleted
-        logger.info(
-            "ttl_cleanup.session_cleared",
-            extra={
-                "session_id": str(session_id),
-                "deleted": deleted,
-            },
+    cutoff_iso = cutoff.isoformat()
+
+    def _delete() -> object:
+        return (
+            get_supabase_admin_client()
+            .schema("medzee_spy")
+            .table("captured_messages")
+            .delete()
+            .lt("ts", cutoff_iso)
+            .execute()
         )
+
+    result = await asyncio.to_thread(_delete)
+    rows = getattr(result, "data", None) or []
+    total_deleted = len(rows)
     logger.info(
         "ttl_cleanup.cycle_complete",
         extra={
-            "expired_session_count": len(expired_sessions),
             "total_deleted": total_deleted,
             "ttl_days": ttl_days,
+            "cutoff": cutoff_iso,
         },
     )
     return {
-        "expired_session_count": len(expired_sessions),
         "total_deleted": total_deleted,
+        "ttl_days": ttl_days,
     }
 
 

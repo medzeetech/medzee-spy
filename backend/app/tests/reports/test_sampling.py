@@ -18,7 +18,7 @@ from app.modules.reports.sampling import (
     _MAX_CONVERSATION_CHARS,
     sample_conversations,
 )
-from app.modules.whatsapp.schemas import (
+from app.modules.reports.schemas import (
     ConversationPayload,
     ExtractedPayload,
     MessagePayload,

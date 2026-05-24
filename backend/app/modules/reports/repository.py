@@ -44,9 +44,9 @@ async def get_existing_for_session(whatsapp_session_id: UUID) -> dict | None:
     """Return the report row already attached to this WhatsApp session, or
     ``None`` if none exists.
 
-    Used by the worker (idempotency: if a placeholder was inserted by
-    ``consume_extracted`` we want to UPDATE it instead of creating a duplicate)
-    and by ``_fail`` (to mark the placeholder as failed when extract dies).
+    Used by the worker (idempotency: if a placeholder row was inserted by
+    a previous run we want to UPDATE it instead of creating a duplicate)
+    and by ``_fail`` (to mark the placeholder as failed when generation dies).
     """
     result = await asyncio.to_thread(
         lambda: _table()

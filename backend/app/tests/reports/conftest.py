@@ -35,19 +35,17 @@ import pytest
 
 from app.modules.reports.schemas import (
     BenchmarkMetric,
+    ConversationPayload,
+    ExtractedPayload,
     FAQ,
     FunnelStage,
     HeatmapPeriod,
+    MessagePayload,
     Objection,
     Opportunity,
     ReportPayload,
     ResponseTimeBucket,
     SentimentSlice,
-)
-from app.modules.whatsapp.schemas import (
-    ConversationPayload,
-    ExtractedPayload,
-    MessagePayload,
 )
 
 
